@@ -825,6 +825,7 @@ const progressWrap = document.getElementById("progressWrap");
     btnUpload.onclick = async () => {
       try {
         const files = fileInput.files;
+        const fileArr = [...files];
         if (!files || files.length === 0) return alert("Please select video files");
 
         const p = getSelectedProjectMeta();
@@ -851,7 +852,6 @@ const progressWrap = document.getElementById("progressWrap");
           }
         }
 
-        const fileArr = [...files];
         const totalBytes = fileArr.reduce((a, f) => a + f.size, 0);
         let doneBytesBefore = 0;
 
