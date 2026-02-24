@@ -20,7 +20,7 @@
         <button class="btnPrimary" id="btnLogin">Sign in with Google</button>
         <button class="btnGhost" id="btnLogout" disabled>Sign out</button>
         <a class="pill" id="adminLink" href="./admin.html" style="display:none;">Admin</a>
-</div>
+      </div>
     </div>
 
     <div class="grid">
@@ -37,6 +37,14 @@
           <div>
             <label class="label">&nbsp;</label>
             <button id="btnReloadProjects" disabled>Reload Projects</button>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div style="flex:1; min-width:260px;">
+            <label class="label">Recording date (used in filename)</label>
+            <input id="recordingDate" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" disabled />
+            <div class="small">Default: today (JST). You can override (YYYY-MM-DD or YYYYMMDD).</div>
           </div>
         </div>
 
@@ -144,7 +152,8 @@
     const fileInput = document.getElementById("file");
     const btnUpload = document.getElementById("btnUpload");
 
-    const progressWrap = document.getElementById("progressWrap");
+    const recordingDateInput = document.getElementById("recordingDate");
+const progressWrap = document.getElementById("progressWrap");
     const progressBar = document.getElementById("progress");
     const progressText = document.getElementById("progressText");
 
@@ -184,6 +193,8 @@
       fileInput.disabled = true;
       btnUpload.disabled = true;
 
+      if (recordingDateInput) recordingDateInput.value = "";
+
       commonDescWrap.style.display = "block";
       perFileDescWrap.style.display = "none";
       perFileList.innerHTML = "";
@@ -200,6 +211,8 @@
       history.textContent = "Signed out";
 
       if (adminLink) adminLink.style.display = "none";
+      if (recordingDateInput) recordingDateInput.disabled = true;
+      
     }
 
     function setProgress(pct) {
@@ -210,18 +223,55 @@
 
     function pad4(n) { return String(n).padStart(4, "0"); }
 
-    function yyyymmddTokyo() {
-      const now = new Date();
+    function toTokyoParts(dateObj) {
       const parts = new Intl.DateTimeFormat("ja-JP", {
         timeZone: "Asia/Tokyo",
         year: "numeric",
         month: "2-digit",
         day: "2-digit"
-      }).formatToParts(now);
+      }).formatToParts(dateObj);
       const y = parts.find(p => p.type === "year").value;
       const m = parts.find(p => p.type === "month").value;
       const d = parts.find(p => p.type === "day").value;
+      return { y, m, d };
+    }
+
+    function ymdTokyo(dateObj) {
+      const { y, m, d } = toTokyoParts(dateObj);
+      return `${y}-${m}-${d}`;
+    }
+
+    function setRecordingDateTodayDefault() {
+      if (recordingDateInput) recordingDateInput.value = ymdTokyo(new Date());
+    }
+
+    function normalizeDateInputToYyyymmdd(v) {
+      const s = (v || "").trim();
+      if (!s) return "";
+      // YYYY-MM-DD or YYYY/MM/DD
+      const m1 = s.match(/^([0-9]{4})[-\/]([0-9]{1,2})[-\/]([0-9]{1,2})$/);
+      if (m1) {
+        const y = m1[1];
+        const mm = String(Number(m1[2])).padStart(2, "0");
+        const dd = String(Number(m1[3])).padStart(2, "0");
+        return `${y}${mm}${dd}`;
+      }
+      // YYYYMMDD
+      const m2 = s.match(/^([0-9]{4})([0-9]{2})([0-9]{2})$/);
+      if (m2) return s;
+      return "";
+    }
+
+    function yyyymmddTokyo() {
+      const now = new Date();
+      const { y, m, d } = toTokyoParts(now);
       return `${y}${m}${d}`;
+    }
+
+    function getSelectedRecordingYyyymmdd() {
+      const raw = (recordingDateInput?.value || "");
+      const normalized = normalizeDateInputToYyyymmdd(raw);
+      return normalized || yyyymmddTokyo();
     }
 
     function getFileExt(originalName) {
@@ -257,6 +307,9 @@
 
       // Clear description (keep template selection)
       desc.value = "";
+
+      // Reset recording date (will be set again on next file select)
+      if (recordingDateInput) recordingDateInput.value = "";
 
       // Reset status text
       currentFileText.textContent = "";
@@ -339,6 +392,8 @@
       const files = fileInput.files;
       if (!files || files.length === 0) return;
       buildPerFileEditors(files);
+      // default recording date = today
+      if (recordingDateInput) recordingDateInput.value = ymdTokyo(new Date());
     };
 
     // ---------- Sheets: Projects ----------
@@ -533,6 +588,31 @@
     }
 
     // ---------- Sheets: Log ----------
+
+    // Smallest available seq per project (fills gaps). Scans last N rows in Log.
+    async function getNextSeqSmallestAvailable(projectId, limitRows = 5000) {
+      const range = `${CONFIG.LOG_SHEET}!A2:K`;
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const rows = data.values || [];
+
+      const sliced = rows.length > limitRows ? rows.slice(rows.length - limitRows) : rows;
+
+      const used = new Set();
+      for (const r of sliced) {
+        const pid = r[1] || "";      // B
+        if (pid !== projectId) continue;
+        const s = Number(r[3] || ""); // D
+        if (Number.isInteger(s) && s > 0) used.add(s);
+      }
+
+      let n = 1;
+      while (used.has(n)) n++;
+      return n;
+    }
+
     async function appendLogRow(rowValues) {
       const range = `${CONFIG.LOG_SHEET}!A1`;
       const url =
@@ -681,6 +761,9 @@
           myEmail = await fetchMyEmail(accessToken);
           setLoggedIn(myEmail);
 
+          if (recordingDateInput) recordingDateInput.disabled = false;
+          
+
           if (adminLink) {
             adminLink.style.display =
               (myEmail || "").toLowerCase() === (CONFIG.ADMIN_EMAIL || "").toLowerCase()
@@ -694,9 +777,13 @@
           templateSelect.disabled = false;
           desc.disabled = false;
           fileInput.disabled = false;
+          if (recordingDateInput) recordingDateInput.disabled = false;
+          
 
           initTemplates();
           updateDescModeUI();
+          if (recordingDateInput) recordingDateInput.disabled = false;
+          setRecordingDateTodayDefault();
           await loadProjects();
           await loadMyHistory(20);
 
@@ -707,8 +794,17 @@
       }
     });
 
-    btnLogin.onclick = () => tokenClient.requestAccessToken();
-    btnLogout.onclick = () => setLoggedOut();
+    const AUTO_KEY = "devlog_auto_signin";
+
+    btnLogin.onclick = () => {
+      sessionStorage.setItem(AUTO_KEY, "1");
+      tokenClient.requestAccessToken();
+    };
+
+    btnLogout.onclick = () => {
+      sessionStorage.removeItem(AUTO_KEY);
+      setLoggedOut();
+    };
 
     btnReloadProjects.onclick = async () => {
       try { await loadProjects(); }
@@ -734,8 +830,26 @@
         const p = getSelectedProjectMeta();
 
         const perFile = descModePerFile.checked;
-        const commonText = desc.value || "";
+        
+        // Require description
+        if (!perFile) {
+          if (!desc.value || !desc.value.trim()) {
+            alert("Description is required.");
+            return;
+          }
+        }
+
+        const commonText = (desc.value || "").trim();
         const perDescMap = perFile ? getPerFileDescriptions() : new Map();
+
+        if (perFile) {
+          for (let i = 0; i < fileArr.length; i++) {
+            if (!(perDescMap.get(i) || "").trim()) {
+              alert(`Description is required for file #${i + 1}.`);
+              return;
+            }
+          }
+        }
 
         const fileArr = [...files];
         const totalBytes = fileArr.reduce((a, f) => a + f.size, 0);
@@ -748,12 +862,12 @@
         etaText.textContent = "ETA: -";
 
         const results = [];
-        const dateStr = yyyymmddTokyo();
+        const dateStr = getSelectedRecordingYyyymmdd();
 
         for (let i = 0; i < fileArr.length; i++) {
           const file = fileArr[i];
 
-          const { seq } = await reserveNextSeq(p.projectId);
+          const seq = await getNextSeqSmallestAvailable(p.projectId);
 
           const ext = getFileExt(file.name);
           const finalName = `${p.projectId}_${dateStr}_${pad4(seq)}${ext}`;
@@ -768,7 +882,8 @@
             projectId: p.projectId,
             projectNo: String(p.projectNo),
             seq: String(seq),
-            uploaderEmail: myEmail
+            uploaderEmail: myEmail,
+            recordingDate: dateStr
           };
 
           const uploadUrl = await startResumableSession({
@@ -842,6 +957,11 @@
 
     // init
     setLoggedOut();
+
+    // try silent re-auth if user previously signed in this session
+    if (sessionStorage.getItem(AUTO_KEY) === "1") {
+      try { tokenClient.requestAccessToken({ prompt: "" }); } catch (e) {}
+    }
   </script>
 </body>
 </html>
