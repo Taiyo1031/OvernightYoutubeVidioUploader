@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Devlog Uploader - Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="./style.css" />
+  <script src="https://accounts.google.com/gsi/client"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand">
+        <h1>Admin</h1>
+        <p class="sub">Restricted access • Project management • File deletion</p>
+      </div>
+
+      <div class="authbar">
+        <span class="pill" id="me">Signed out</span>
+        <button class="btnPrimary" id="btnLogin">Sign in</button>
+        <button class="btnGhost" id="btnLogout" disabled>Sign out</button>
+        <a class="pill" href="./index.html">Back</a>
+      </div>
+    </div>
+
+    <div class="grid" style="grid-template-columns: 1fr;">
+      <div class="card" id="blockedCard" style="display:none;">
+        <h2>Access denied</h2>
+        <p class="hint" id="blockedMsg">This page is restricted.</p>
+      </div>
+
+      <div class="card" id="adminCard" style="display:none;">
+        <h2>Quick links</h2>
+        <div class="row">
+          <a class="pill" id="linkSheet" target="_blank" rel="noopener noreferrer">Open Sheet</a>
+          <a class="pill" id="linkRoot" target="_blank" rel="noopener noreferrer">Open Root Folder</a>
+        </div>
+        <p class="hint mono" id="adminInfo"></p>
+      </div>
+
+      <div class="card" id="projectsCard" style="display:none;">
+        <h2>Projects</h2>
+        <p class="hint">Add / archive projects. (Archive = isActive FALSE)</p>
+
+        <div class="row">
+          <div style="flex:1; min-width:220px;">
+            <label class="label">Project ID (slug)</label>
+            <input id="newProjectId" placeholder="e.g. mask_mystique" />
+          </div>
+          <div style="flex:1; min-width:220px;">
+            <label class="label">Project Name</label>
+            <input id="newProjectName" placeholder="e.g. Mask Mystique" />
+          </div>
+          <div>
+            <label class="label">&nbsp;</label>
+            <button class="btnPrimary" id="btnAddProject">Add project</button>
+          </div>
+        </div>
+
+        <hr class="sep"/>
+
+        <div class="row">
+          <button id="btnReloadProjects">Reload projects</button>
+          <span class="mono" id="projectsStatus"></span>
+        </div>
+
+        <div style="height:10px;"></div>
+        <div class="tableWrap" id="projectsTable"></div>
+
+        <p class="hint" style="margin-top:10px;">
+          Tip: “Delete” is implemented as Archive by default to avoid accidental data loss.
+        </p>
+      </div>
+
+      <div class="card" id="filesCard" style="display:none;">
+        <h2>Recent uploads</h2>
+        <p class="hint">Shows latest Drive files uploaded via this app (schema = devlog_v1). You can delete files here.</p>
+
+        <div class="row">
+          <button id="btnReloadFiles">Reload files</button>
+
+          <div style="flex:1; min-width:260px;">
+            <label class="label">Filter by projectId (optional)</label>
+            <input id="fileProjectFilter" placeholder="e.g. mask_mystique" />
+          </div>
+
+          <div style="width:120px;">
+            <label class="label">Limit</label>
+            <select id="fileLimit">
+              <option value="20">20</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+        </div>
+
+        <hr class="sep"/>
+
+        <div class="row">
+          <div style="flex:1; min-width:260px;">
+            <label class="label">Delete by File ID (optional)</label>
+            <input id="deleteFileId" placeholder="Drive fileId..." />
+          </div>
+          <div>
+            <label class="label">&nbsp;</label>
+            <button id="btnDeleteById">Delete fileId</button>
+          </div>
+          <span class="mono" id="filesStatus"></span>
+        </div>
+
+        <div style="height:10px;"></div>
+        <div class="tableWrap" id="filesTable"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { CONFIG } from "./app.js";
+
+    let accessToken = null;
+    let myEmail = "";
+
+    const me = document.getElementById("me");
+    const btnLogin = document.getElementById("btnLogin");
+    const btnLogout = document.getElementById("btnLogout");
+
+    const blockedCard = document.getElementById("blockedCard");
+    const blockedMsg = document.getElementById("blockedMsg");
+
+    const adminCard = document.getElementById("adminCard");
+    const projectsCard = document.getElementById("projectsCard");
+    const filesCard = document.getElementById("filesCard");
+
+    const linkSheet = document.getElementById("linkSheet");
+    const linkRoot  = document.getElementById("linkRoot");
+    const adminInfo = document.getElementById("adminInfo");
+
+    const newProjectId = document.getElementById("newProjectId");
+    const newProjectName = document.getElementById("newProjectName");
+    const btnAddProject = document.getElementById("btnAddProject");
+
+    const btnReloadProjects = document.getElementById("btnReloadProjects");
+    const projectsStatus = document.getElementById("projectsStatus");
+    const projectsTable = document.getElementById("projectsTable");
+
+    const btnReloadFiles = document.getElementById("btnReloadFiles");
+    const fileProjectFilter = document.getElementById("fileProjectFilter");
+    const fileLimit = document.getElementById("fileLimit");
+    const deleteFileId = document.getElementById("deleteFileId");
+    const btnDeleteById = document.getElementById("btnDeleteById");
+    const filesStatus = document.getElementById("filesStatus");
+    const filesTable = document.getElementById("filesTable");
+
+    // ----- helpers -----
+    function esc(s){
+      return (s ?? "").toString()
+        .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;").replaceAll("'","&#039;");
+    }
+    function pad3(n){ return String(n).padStart(3,"0"); }
+    function nowISO(){ return new Date().toISOString(); }
+
+    function sheetUrl(){
+      return `https://docs.google.com/spreadsheets/d/${CONFIG.SPREADSHEET_ID}/edit`;
+    }
+    function folderUrl(folderId){
+      return `https://drive.google.com/drive/folders/${folderId}`;
+    }
+
+    async function fetchMyEmail(token){
+      const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      return data.email || "";
+    }
+
+    function showBlocked(msg){
+      blockedCard.style.display = "block";
+      adminCard.style.display = "none";
+      projectsCard.style.display = "none";
+      filesCard.style.display = "none";
+      blockedMsg.textContent = msg;
+    }
+
+    function showAdmin(){
+      blockedCard.style.display = "none";
+      adminCard.style.display = "block";
+      projectsCard.style.display = "block";
+      filesCard.style.display = "block";
+    }
+
+    // ----- Sheets helpers -----
+    async function sheetsGet(rangeA1){
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(rangeA1)}`;
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+
+    async function sheetsPut(rangeA1, values){
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(rangeA1)}?valueInputOption=USER_ENTERED`;
+      const res = await fetch(url, {
+        method:"PUT",
+        headers:{
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type":"application/json"
+        },
+        body: JSON.stringify({ values })
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
+
+    async function sheetsAppend(rangeA1, values){
+      const url =
+        `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(rangeA1)}:append`+
+        `?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+      const res = await fetch(url, {
+        method:"POST",
+        headers:{
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type":"application/json"
+        },
+        body: JSON.stringify({ values })
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
+
+    // ---- NEW: delete Log rows by fileId (close gaps) ----
+    async function sheetsBatchUpdate(requests) {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}:batchUpdate`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ requests })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+
+    async function getSheetIdByTitle(title) {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}?fields=sheets(properties(sheetId,title))`;
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const sheet = (data.sheets || []).find(s => s.properties?.title === title);
+      if (!sheet) throw new Error(`Sheet not found: ${title}`);
+      return sheet.properties.sheetId;
+    }
+
+    async function findLogRowNumbersByFileId(fileId) {
+      // Log: A..K, H (driveFileId) is index 7
+      const data = await sheetsGet(`${CONFIG.LOG_SHEET}!A2:K`);
+      const rows = data.values || [];
+
+      const hits = [];
+      for (let i = 0; i < rows.length; i++) {
+        const driveFileId = rows[i][7] || "";
+        if (driveFileId === fileId) hits.push(2 + i); // actual row number
+      }
+      return hits;
+    }
+
+    async function deleteLogRowsByFileId(fileId) {
+      const rowNums = await findLogRowNumbersByFileId(fileId);
+      if (rowNums.length === 0) return 0;
+
+      const sheetId = await getSheetIdByTitle(CONFIG.LOG_SHEET);
+
+      // delete bottom -> top
+      rowNums.sort((a,b) => b - a);
+
+      const requests = rowNums.map(rn => ({
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: "ROWS",
+            startIndex: rn - 1, // 0-based inclusive
+            endIndex: rn        // 0-based exclusive
+          }
+        }
+      }));
+
+      await sheetsBatchUpdate(requests);
+      return rowNums.length;
+    }
+
+    // ----- Projects -----
+    async function loadProjects(){
+      projectsStatus.textContent = "Loading...";
+      const data = await sheetsGet(`${CONFIG.PROJECTS_SHEET}!A2:H`);
+      const rows = data.values || [];
+
+      const items = rows.map((r, idx) => ({
+        rowNum: 2 + idx,
+        projectNo: Number(r[0] || "0"),
+        projectId: r[1] || "",
+        projectName: r[2] || "",
+        folderId: r[3] || "",
+        nextSeq: r[4] || "1",
+        isActive: (r[5] || "").toUpperCase() === "TRUE",
+        createdAt: r[6] || "",
+        createdBy: r[7] || ""
+      }));
+
+      projectsStatus.textContent = `${items.length} project(s)`;
+
+      const body = items.map(p => {
+        const link = p.folderId ? folderUrl(p.folderId) : "";
+        return `
+          <tr>
+            <td>${esc(p.projectNo ? pad3(p.projectNo) : "-")}</td>
+            <td class="mono">${esc(p.projectId)}</td>
+            <td>${esc(p.projectName)}</td>
+            <td>${p.folderId ? `<a href="${link}" target="_blank" rel="noopener noreferrer">Folder</a>` : "-"}</td>
+            <td class="mono">${esc(p.nextSeq)}</td>
+            <td>${p.isActive ? "TRUE" : "FALSE"}</td>
+            <td class="mono">${esc(p.createdAt)}</td>
+            <td class="mono">${esc(p.createdBy)}</td>
+            <td>
+              <button data-action="toggle" data-row="${p.rowNum}" data-active="${p.isActive ? "1":"0"}">
+                ${p.isActive ? "Archive" : "Activate"}
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      projectsTable.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>No</th><th>projectId</th><th>Name</th><th>Folder</th><th>nextSeq</th><th>isActive</th><th>createdAt</th><th>createdBy</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      `;
+
+      projectsTable.querySelectorAll("button[data-action='toggle']").forEach(btn => {
+        btn.onclick = async () => {
+          const row = Number(btn.dataset.row);
+          const isActive = btn.dataset.active === "1";
+          const newVal = isActive ? "FALSE" : "TRUE";
+          try{
+            btn.disabled = true;
+            await sheetsPut(`${CONFIG.PROJECTS_SHEET}!F${row}`, [[newVal]]);
+            await loadProjects();
+          }catch(e){
+            console.error(e);
+            alert("Failed to update project");
+          }finally{
+            btn.disabled = false;
+          }
+        };
+      });
+    }
+
+    function normalizeProjectId(s){
+      return (s || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^a-z0-9_]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    }
+
+    async function createDriveFolder(name, parentId){
+      const meta = { name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] };
+      const res = await fetch("https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink", {
+        method:"POST",
+        headers:{
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type":"application/json"
+        },
+        body: JSON.stringify(meta)
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+
+    async function addProject(){
+      const pid = normalizeProjectId(newProjectId.value);
+      const pname = (newProjectName.value || "").trim();
+      if (!pid) return alert("Project ID is required");
+      if (!pname) return alert("Project Name is required");
+
+      const data = await sheetsGet(`${CONFIG.PROJECTS_SHEET}!A2:B`);
+      const rows = data.values || [];
+
+      const existingIds = new Set(rows.map(r => r[1]).filter(Boolean));
+      if (existingIds.has(pid)) return alert("projectId already exists");
+
+      const nums = rows.map(r => Number(r[0] || "0")).filter(n => isFinite(n));
+      const nextNo = (nums.length ? Math.max(...nums) : 0) + 1;
+
+      const folderName = `${pad3(nextNo)}_${pid}`;
+      btnAddProject.disabled = true;
+      projectsStatus.textContent = "Creating folder...";
+
+      const folder = await createDriveFolder(folderName, CONFIG.ROOT_FOLDER_ID);
+
+      projectsStatus.textContent = "Writing sheet...";
+      await sheetsAppend(`${CONFIG.PROJECTS_SHEET}!A1`, [[
+        String(nextNo),
+        pid,
+        pname,
+        folder.id,
+        "1",
+        "TRUE",
+        nowISO(),
+        myEmail
+      ]]);
+
+      newProjectId.value = "";
+      newProjectName.value = "";
+      await loadProjects();
+      projectsStatus.textContent = `Project added: ${pid}`;
+      btnAddProject.disabled = false;
+    }
+
+    // ----- Drive: recent uploads + delete -----
+    function formatBytes(bytes){
+      const n = Number(bytes || 0);
+      if (!isFinite(n) || n <= 0) return "-";
+      const units = ["B","KB","MB","GB","TB"];
+      let v=n, i=0; while(v>=1024 && i<units.length-1){ v/=1024; i++; }
+      return `${v.toFixed(i===0?0:2)} ${units[i]}`;
+    }
+
+    async function driveSearchRecent(limit, projectIdFilter){
+      const qParts = [
+        "trashed=false",
+        `appProperties has { key='schema' and value='${CONFIG.APP_SCHEMA}' }`
+      ];
+      if (projectIdFilter){
+        qParts.push(`appProperties has { key='projectId' and value='${projectIdFilter}' }`);
+      }
+      const q = qParts.join(" and ");
+
+      const params = new URLSearchParams({
+        q,
+        pageSize: String(limit),
+        orderBy: "createdTime desc",
+        fields: "files(id,name,size,createdTime,webViewLink,appProperties)"
+      });
+
+      const url = `https://www.googleapis.com/drive/v3/files?${params.toString()}`;
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      return data.files || [];
+    }
+
+    async function driveDeleteFile(fileId){
+      const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+      const res = await fetch(url, {
+        method:"DELETE",
+        headers:{ "Authorization": `Bearer ${accessToken}` }
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
+
+    function toTokyo(dtIso){
+      if (!dtIso) return "";
+      try{
+        const d = new Date(dtIso);
+        return new Intl.DateTimeFormat("ja-JP", {
+          timeZone: "Asia/Tokyo",
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit"
+        }).format(d);
+      }catch{ return dtIso; }
+    }
+
+    async function loadFiles(){
+      filesStatus.textContent = "Loading...";
+      const limit = Number(fileLimit.value || "50");
+      const pid = (fileProjectFilter.value || "").trim();
+
+      const files = await driveSearchRecent(limit, pid);
+      filesStatus.textContent = `${files.length} file(s)`;
+
+      const body = files.map(f => {
+        const proj = f.appProperties?.projectId || "-";
+        const seq = f.appProperties?.seq || "-";
+        const uploader = f.appProperties?.uploaderEmail || "-";
+        const link = f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`;
+        return `
+          <tr>
+            <td class="mono">${esc(toTokyo(f.createdTime))}</td>
+            <td class="mono">${esc(proj)}</td>
+            <td class="mono">${esc(seq)}</td>
+            <td class="mono">${esc(uploader)}</td>
+            <td><a href="${link}" target="_blank" rel="noopener noreferrer">${esc(f.name || "")}</a></td>
+            <td style="text-align:right;" class="mono">${esc(formatBytes(f.size))}</td>
+            <td class="mono">${esc(f.id)}</td>
+            <td><button data-del="${esc(f.id)}">Delete</button></td>
+          </tr>
+        `;
+      }).join("");
+
+      filesTable.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Date (JST)</th><th>projectId</th><th>seq</th><th>uploader</th><th>File</th><th>Size</th><th>fileId</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      `;
+
+      // ✅ Delete: Drive + Log rows (close gaps)
+      filesTable.querySelectorAll("button[data-del]").forEach(b => {
+        b.onclick = async () => {
+          const id = b.dataset.del;
+          if (!id) return;
+          if (!confirm(`Delete this file?\n${id}\n\nThis will also delete matching rows in Sheets Log.`)) return;
+
+          try{
+            b.disabled = true;
+
+            // 1) Drive
+            await driveDeleteFile(id);
+
+            // 2) Log rows (remove rows, close blanks)
+            const n = await deleteLogRowsByFileId(id);
+
+            // 3) Reload
+            await loadFiles();
+
+            alert(`Deleted.\nDrive: OK\nLog rows removed: ${n}`);
+          }catch(e){
+            console.error(e);
+            alert("Failed to delete (see console)");
+          }finally{
+            b.disabled = false;
+          }
+        };
+      });
+    }
+
+    // ----- Auth gating -----
+    const tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.CLIENT_ID,
+      scope: CONFIG.SCOPES,
+      callback: async (resp) => {
+        accessToken = resp.access_token;
+        try{
+          myEmail = await fetchMyEmail(accessToken);
+          me.textContent = `Signed in: ${myEmail}`;
+          btnLogout.disabled = false;
+
+          if ((myEmail || "").toLowerCase() !== (CONFIG.ADMIN_EMAIL || "").toLowerCase()){
+            showBlocked(`Access denied. Admin only: ${CONFIG.ADMIN_EMAIL}`);
+            return;
+          }
+
+          showAdmin();
+
+          linkSheet.href = sheetUrl();
+          linkRoot.href = folderUrl(CONFIG.ROOT_FOLDER_ID);
+          adminInfo.textContent = `Admin: ${myEmail} • Sheet: ${CONFIG.SPREADSHEET_ID} • Root: ${CONFIG.ROOT_FOLDER_ID}`;
+
+          await loadProjects();
+          await loadFiles();
+
+        }catch(e){
+          console.error(e);
+          showBlocked("Failed to sign in. Check console.");
+        }
+      }
+    });
+
+    btnLogin.onclick = () => tokenClient.requestAccessToken();
+    btnLogout.onclick = () => location.reload();
+
+    // ----- events -----
+    btnReloadProjects.onclick = async () => {
+      try{ await loadProjects(); }catch(e){ console.error(e); alert("Failed to load projects"); }
+    };
+    btnAddProject.onclick = async () => {
+      try{ await addProject(); }catch(e){ console.error(e); alert("Failed to add project"); btnAddProject.disabled=false; }
+    };
+
+    btnReloadFiles.onclick = async () => {
+      try{ await loadFiles(); }catch(e){ console.error(e); alert("Failed to load files"); }
+    };
+
+    // ✅ Delete by ID: Drive + Log rows
+    btnDeleteById.onclick = async () => {
+      const id = (deleteFileId.value || "").trim();
+      if (!id) return alert("Enter fileId");
+      if (!confirm(`Delete this file?\n${id}\n\nThis will also delete matching rows in Sheets Log.`)) return;
+
+      try{
+        btnDeleteById.disabled = true;
+
+        await driveDeleteFile(id);
+        const n = await deleteLogRowsByFileId(id);
+
+        deleteFileId.value = "";
+        await loadFiles();
+
+        alert(`Deleted.\nDrive: OK\nLog rows removed: ${n}`);
+      }catch(e){
+        console.error(e);
+        alert("Failed to delete fileId (see console)");
+      }finally{
+        btnDeleteById.disabled = false;
+      }
+    };
+
+    // initial state
+    showBlocked("Please sign in as admin.");
+  </script>
+</body>
+</html>

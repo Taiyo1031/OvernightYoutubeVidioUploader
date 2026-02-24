@@ -1,0 +1,847 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Devlog Uploader</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="./style.css" />
+  <script src="https://accounts.google.com/gsi/client"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="brand">
+        <h1>Devlog Uploader</h1>
+        <p class="sub">Upload videos to Google Drive + log metadata to Google Sheets</p>
+      </div>
+
+      <div class="authbar">
+        <span class="pill" id="me">Signed out</span>
+        <button class="btnPrimary" id="btnLogin">Sign in with Google</button>
+        <button class="btnGhost" id="btnLogout" disabled>Sign out</button>
+        <a class="pill" id="adminLink" href="./admin.html" style="display:none;">Admin</a>
+</div>
+    </div>
+
+    <div class="grid">
+      <!-- LEFT: Upload -->
+      <div class="card">
+        <h2>Upload</h2>
+        <p class="hint">Choose a project, attach files, and add descriptions. Supports multi-file uploads with per-file notes.</p>
+
+        <div class="row">
+          <div style="flex:1; min-width:260px;">
+            <label class="label">Project</label>
+            <select id="projectSelect" disabled></select>
+          </div>
+          <div>
+            <label class="label">&nbsp;</label>
+            <button id="btnReloadProjects" disabled>Reload Projects</button>
+          </div>
+        </div>
+
+        <hr class="sep"/>
+
+        <label class="label">Description mode</label>
+        <div class="radio">
+          <label><input type="radio" name="descMode" id="descModeCommon" checked disabled> Same for all files</label>
+          <label><input type="radio" name="descMode" id="descModePerFile" disabled> Per-file notes</label>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <!-- Common description -->
+          <div id="commonDescWrap" style="flex:1; min-width:280px;">
+            <label class="label">Template</label>
+            <select id="templateSelect" disabled></select>
+
+            <div style="height:10px;"></div>
+            <label class="label">Description</label>
+            <textarea id="desc" placeholder="Common description (template can prefill this)" disabled></textarea>
+          </div>
+
+          <!-- Per-file description -->
+          <div id="perFileDescWrap" style="display:none; flex:1; min-width:280px;">
+            <label class="label">Per-file descriptions</label>
+            <div id="perFileList"></div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div style="flex:1; min-width:280px;">
+            <label class="label">Video files</label>
+            <input id="file" type="file" accept="video/*" multiple disabled />
+            <div class="small">Tip: Upload order is the selected file order. Files upload sequentially for stability.</div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:12px;">
+          <button class="btnPrimary" id="btnUpload" disabled>Upload</button>
+          <span class="mono" id="finalNameText"></span>
+        </div>
+
+        <div class="progressWrap" id="progressWrap" style="display:none;">
+          <div class="mono" id="statusLine"></div>
+          <div style="height:8px;"></div>
+          <progress id="progress" value="0" max="100"></progress>
+          <div class="kpi">
+            <span id="progressText">0%</span>
+            <span id="speedText">Speed: -</span>
+            <span id="etaText">ETA: -</span>
+          </div>
+          <div class="mono" id="currentFileText"></div>
+        </div>
+
+        <div class="footerNote">
+          Filename format: <span class="mono">projectId_YYYYMMDD_####.ext</span> (sequence is persistent per project)
+        </div>
+      </div>
+
+      <!-- RIGHT: History -->
+      <div class="card">
+        <h2>My upload history</h2>
+        <p class="hint">This list is built from Drive search (appProperties) and enriched with descriptions from Sheets (Log).</p>
+
+        <div class="row">
+          <div style="flex:1; min-width:260px;">
+            <label class="label">Filter by project</label>
+            <select id="historyProjectFilter">
+              <option value="">All projects</option>
+            </select>
+          </div>
+          <div>
+            <label class="label">&nbsp;</label>
+            <button id="btnReloadHistory">Refresh history</button>
+          </div>
+        </div>
+
+        <div style="height:10px;"></div>
+        <div class="tableWrap" id="history">Signed out</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { CONFIG } from "./app.js";
+
+    let accessToken = null;
+    let myEmail = "";
+
+    const me = document.getElementById("me");
+    const btnLogin = document.getElementById("btnLogin");
+    const btnLogout = document.getElementById("btnLogout");
+
+    const projectSelect = document.getElementById("projectSelect");
+    const btnReloadProjects = document.getElementById("btnReloadProjects");
+
+    const descModeCommon = document.getElementById("descModeCommon");
+    const descModePerFile = document.getElementById("descModePerFile");
+    const commonDescWrap = document.getElementById("commonDescWrap");
+    const perFileDescWrap = document.getElementById("perFileDescWrap");
+    const perFileList = document.getElementById("perFileList");
+
+    const templateSelect = document.getElementById("templateSelect");
+    const desc = document.getElementById("desc");
+    const fileInput = document.getElementById("file");
+    const btnUpload = document.getElementById("btnUpload");
+
+    const progressWrap = document.getElementById("progressWrap");
+    const progressBar = document.getElementById("progress");
+    const progressText = document.getElementById("progressText");
+
+    const statusLine = document.getElementById("statusLine");
+    const speedText = document.getElementById("speedText");
+    const etaText = document.getElementById("etaText");
+    const currentFileText = document.getElementById("currentFileText");
+    const finalNameText = document.getElementById("finalNameText");
+
+    const history = document.getElementById("history");
+    const historyProjectFilter = document.getElementById("historyProjectFilter");
+    const btnReloadHistory = document.getElementById("btnReloadHistory");
+
+    const adminLink = document.getElementById("adminLink");
+
+    // ---------- UI helpers ----------
+    function setLoggedIn(email) {
+      me.textContent = `Signed in: ${email}`;
+      btnLogout.disabled = false;
+    }
+
+    function setLoggedOut() {
+      me.textContent = "Signed out";
+      btnLogout.disabled = true;
+
+      accessToken = null;
+      myEmail = "";
+
+      projectSelect.disabled = true;
+      btnReloadProjects.disabled = true;
+
+      descModeCommon.disabled = true;
+      descModePerFile.disabled = true;
+
+      templateSelect.disabled = true;
+      desc.disabled = true;
+      fileInput.disabled = true;
+      btnUpload.disabled = true;
+
+      commonDescWrap.style.display = "block";
+      perFileDescWrap.style.display = "none";
+      perFileList.innerHTML = "";
+
+      progressWrap.style.display = "none";
+      progressBar.value = 0;
+      progressText.textContent = "0%";
+      statusLine.textContent = "";
+      speedText.textContent = "Speed: -";
+      etaText.textContent = "ETA: -";
+      currentFileText.textContent = "";
+      finalNameText.textContent = "";
+
+      history.textContent = "Signed out";
+
+      if (adminLink) adminLink.style.display = "none";
+    }
+
+    function setProgress(pct) {
+      progressWrap.style.display = "block";
+      progressBar.value = pct;
+      progressText.textContent = `${pct}%`;
+    }
+
+    function pad4(n) { return String(n).padStart(4, "0"); }
+
+    function yyyymmddTokyo() {
+      const now = new Date();
+      const parts = new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(now);
+      const y = parts.find(p => p.type === "year").value;
+      const m = parts.find(p => p.type === "month").value;
+      const d = parts.find(p => p.type === "day").value;
+      return `${y}${m}${d}`;
+    }
+
+    function getFileExt(originalName) {
+      const idx = originalName.lastIndexOf(".");
+      if (idx <= 0) return "";
+      const ext = originalName.slice(idx).toLowerCase();
+      return ext.replace(/[^a-z0-9.]/g, "");
+    }
+
+    function getSelectedProjectMeta() {
+      const opt = projectSelect.selectedOptions[0];
+      if (!opt || !opt.value) throw new Error("No project selected");
+      return {
+        projectId: opt.value,
+        projectNo: opt.dataset.projectNo,
+        folderId: opt.dataset.folderId
+      };
+    }
+
+    function resetUploadFormUI() {
+      // Clear file selection reliably
+      fileInput.value = "";
+      fileInput.type = "text";
+      fileInput.type = "file";
+      fileInput.accept = "video/*";
+      fileInput.multiple = true;
+
+      // Reset per-file editors
+      perFileList.innerHTML = "";
+      perFileDescWrap.style.display = "none";
+      commonDescWrap.style.display = "block";
+      descModeCommon.checked = true;
+
+      // Clear description (keep template selection)
+      desc.value = "";
+
+      // Reset status text
+      currentFileText.textContent = "";
+      finalNameText.textContent = "";
+    }
+
+    // ---------- Auth ----------
+    async function fetchMyEmail(token) {
+      const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      return data.email || "";
+    }
+
+    // ---------- Templates ----------
+    function initTemplates() {
+      templateSelect.innerHTML = "";
+      for (const t of CONFIG.TEMPLATES) {
+        const opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = t.name;
+        templateSelect.appendChild(opt);
+      }
+      templateSelect.onchange = () => {
+        const t = CONFIG.TEMPLATES.find(x => x.id === templateSelect.value);
+        if (t && t.body) desc.value = t.body;
+      };
+    }
+
+    // ---------- Desc mode ----------
+    function escapeHtml(s) {
+      return (s ?? "").toString()
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function updateDescModeUI() {
+      const perFile = descModePerFile.checked;
+      commonDescWrap.style.display = perFile ? "none" : "block";
+      perFileDescWrap.style.display = perFile ? "block" : "none";
+    }
+    descModeCommon.onchange = updateDescModeUI;
+    descModePerFile.onchange = updateDescModeUI;
+
+    function buildPerFileEditors(files) {
+      perFileList.innerHTML = "";
+      [...files].forEach((f, idx) => {
+        const wrap = document.createElement("div");
+        wrap.className = "perFileItem";
+
+        const title = document.createElement("div");
+        title.className = "perFileTitle";
+        title.innerHTML = `${idx + 1}. ${escapeHtml(f.name)} <span>(${Math.round(f.size / 1024 / 1024)} MB)</span>`;
+
+        const ta = document.createElement("textarea");
+        ta.rows = 4;
+        ta.placeholder = "Description for this file";
+        ta.dataset.fileIndex = String(idx);
+
+        wrap.appendChild(title);
+        wrap.appendChild(ta);
+        perFileList.appendChild(wrap);
+      });
+    }
+
+    function getPerFileDescriptions() {
+      const map = new Map();
+      perFileList.querySelectorAll("textarea").forEach(ta => {
+        map.set(Number(ta.dataset.fileIndex), ta.value || "");
+      });
+      return map;
+    }
+
+    fileInput.onchange = () => {
+      const files = fileInput.files;
+      if (!files || files.length === 0) return;
+      buildPerFileEditors(files);
+    };
+
+    // ---------- Sheets: Projects ----------
+    async function loadProjects() {
+      const range = `${CONFIG.PROJECTS_SHEET}!A2:H`;
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
+
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const rows = data.values || [];
+
+      const active = rows
+        .map(r => ({
+          projectNo: r[0] || "",
+          projectId: r[1] || "",
+          projectName: r[2] || "",
+          folderId: r[3] || "",
+          nextSeq: r[4] || "1",
+          isActive: (r[5] || "").toUpperCase() === "TRUE"
+        }))
+        .filter(p => p.projectId && p.projectName && p.folderId && p.isActive)
+        .sort((a, b) => Number(a.projectNo) - Number(b.projectNo));
+
+      projectSelect.innerHTML = "";
+
+      if (active.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(No active projects)";
+        projectSelect.appendChild(opt);
+        projectSelect.disabled = true;
+        btnUpload.disabled = true;
+        return;
+      }
+
+      for (const p of active) {
+        const opt = document.createElement("option");
+        opt.value = p.projectId;
+        opt.textContent = `${String(p.projectNo).padStart(3, "0")} - ${p.projectName}`;
+        opt.dataset.folderId = p.folderId;
+        opt.dataset.nextSeq = p.nextSeq;
+        opt.dataset.projectNo = p.projectNo;
+        projectSelect.appendChild(opt);
+      }
+
+      projectSelect.disabled = false;
+      btnUpload.disabled = false;
+
+      // Sync history filter options
+      historyProjectFilter.innerHTML = `<option value="">All projects</option>`;
+      for (const opt of projectSelect.options) {
+        if (!opt.value) continue;
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.textContent;
+        historyProjectFilter.appendChild(o);
+      }
+    }
+
+    async function getProjectsRows() {
+      const range = `${CONFIG.PROJECTS_SHEET}!A2:H`;
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      return data.values || [];
+    }
+
+    async function findProjectRowNumber(projectId) {
+      const rows = await getProjectsRows();
+      for (let i = 0; i < rows.length; i++) {
+        if ((rows[i][1] || "") === projectId) return 2 + i;
+      }
+      throw new Error("Project not found in Projects sheet: " + projectId);
+    }
+
+    async function reserveNextSeq(projectId) {
+      const rowNum = await findProjectRowNumber(projectId);
+      const cellRange = `${CONFIG.PROJECTS_SHEET}!E${rowNum}`;
+
+      const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(cellRange)}`;
+      const r1 = await fetch(readUrl, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!r1.ok) throw new Error(await r1.text());
+      const d1 = await r1.json();
+      const current = Number((d1.values?.[0]?.[0]) || "1");
+
+      const newVal = current + 1;
+      const writeUrl =
+        `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(cellRange)}` +
+        `?valueInputOption=USER_ENTERED`;
+
+      const r2 = await fetch(writeUrl, {
+        method: "PUT",
+        headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [[String(newVal)]] })
+      });
+      if (!r2.ok) throw new Error(await r2.text());
+
+      return { seq: current };
+    }
+
+    // ---------- Drive: Resumable ----------
+    async function startResumableSession({ fileName, folderId, description, file, appProps }) {
+      const meta = {
+        name: fileName,
+        parents: [folderId],
+        description: description || "",
+        appProperties: appProps || {}
+      };
+
+      const url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size,createdTime,webViewLink,appProperties";
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json; charset=UTF-8",
+          "X-Upload-Content-Type": file.type || "application/octet-stream",
+          "X-Upload-Content-Length": String(file.size)
+        },
+        body: JSON.stringify(meta)
+      });
+
+      if (!res.ok) throw new Error(await res.text());
+      const uploadUrl = res.headers.get("Location");
+      if (!uploadUrl) throw new Error("Resumable session URL was not returned");
+      return uploadUrl;
+    }
+
+    function formatETA(sec) {
+      if (!isFinite(sec) || sec < 0) return "-";
+      const s = Math.ceil(sec);
+      const mm = String(Math.floor(s / 60)).padStart(2, "0");
+      const ss = String(s % 60).padStart(2, "0");
+      return `${mm}:${ss}`;
+    }
+
+    function formatSpeed(bytesPerSec) {
+      if (!isFinite(bytesPerSec) || bytesPerSec <= 0) return "-";
+      const mbps = bytesPerSec / (1024 * 1024);
+      return `${mbps.toFixed(2)} MB/s`;
+    }
+
+    async function uploadInChunks(uploadUrl, file, onProgress) {
+      const chunkSize = CONFIG.CHUNK_SIZE;
+      let offset = 0;
+
+      let lastTime = performance.now();
+      let lastOffset = 0;
+
+      while (offset < file.size) {
+        const end = Math.min(offset + chunkSize, file.size);
+        const chunk = file.slice(offset, end);
+
+        const res = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Length": String(chunk.size),
+            "Content-Range": `bytes ${offset}-${end - 1}/${file.size}`
+          },
+          body: chunk
+        });
+
+        if (res.status === 308) {
+          offset = end;
+
+          const now = performance.now();
+          const dt = (now - lastTime) / 1000;
+          const dBytes = offset - lastOffset;
+
+          const speed = dt > 0 ? (dBytes / dt) : 0;
+          const remaining = file.size - offset;
+          const eta = speed > 0 ? (remaining / speed) : Infinity;
+
+          lastTime = now;
+          lastOffset = offset;
+
+          if (onProgress) onProgress({ fileOffset: offset, speedBps: speed, etaSec: eta });
+          continue;
+        }
+
+        if (res.ok) {
+          if (onProgress) onProgress({ fileOffset: file.size, speedBps: 0, etaSec: 0 });
+          return await res.json();
+        }
+
+        throw new Error(await res.text());
+      }
+
+      throw new Error("Upload did not complete");
+    }
+
+    // ---------- Sheets: Log ----------
+    async function appendLogRow(rowValues) {
+      const range = `${CONFIG.LOG_SHEET}!A1`;
+      const url =
+        `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}:append` +
+        `?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ values: [rowValues] })
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
+
+    async function loadMyLogMap(limitRows = 800) {
+      const range = `${CONFIG.LOG_SHEET}!A2:K`;
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
+
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const rows = data.values || [];
+
+      const sliced = rows.slice(Math.max(0, rows.length - limitRows));
+
+      const map = new Map();
+      for (const r of sliced) {
+        const uploader = r[2] || "";
+        const driveFileId = r[7] || "";
+        const description = r[6] || "";
+        if (!driveFileId) continue;
+        if (uploader !== myEmail) continue;
+        map.set(driveFileId, { description });
+      }
+      return map;
+    }
+
+    // ---------- History (Drive + Sheets join) ----------
+    function formatBytes(bytes) {
+      const n = Number(bytes || 0);
+      if (!isFinite(n) || n <= 0) return "-";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let v = n, i = 0;
+      while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+      return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+    }
+
+    function toTokyo(dtIso) {
+      if (!dtIso) return "";
+      try {
+        const d = new Date(dtIso);
+        return new Intl.DateTimeFormat("ja-JP", {
+          timeZone: "Asia/Tokyo",
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit"
+        }).format(d);
+      } catch { return dtIso; }
+    }
+
+    async function loadMyHistory(limit = 20) {
+      history.textContent = "Loading...";
+
+      const selectedProject = historyProjectFilter?.value || "";
+
+      const qParts = [
+        "trashed=false",
+        `appProperties has { key='schema' and value='${CONFIG.APP_SCHEMA}' }`,
+        `appProperties has { key='uploaderEmail' and value='${myEmail}' }`
+      ];
+      if (selectedProject) {
+        qParts.push(`appProperties has { key='projectId' and value='${selectedProject}' }`);
+      }
+      const q = qParts.join(" and ");
+
+      const params = new URLSearchParams({
+        q,
+        pageSize: String(limit),
+        orderBy: "createdTime desc",
+        fields: "files(id,name,size,createdTime,webViewLink,appProperties)"
+      });
+
+      const url = `https://www.googleapis.com/drive/v3/files?${params.toString()}`;
+
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+
+      const data = await res.json();
+      const files = data.files || [];
+
+      if (files.length === 0) {
+        history.textContent = "No history.";
+        return;
+      }
+
+      const logMap = await loadMyLogMap(800);
+
+      const rows = files.map(f => {
+        const proj = f.appProperties?.projectId || "-";
+        const seq  = f.appProperties?.seq || "-";
+        const t    = toTokyo(f.createdTime);
+        const size = formatBytes(f.size);
+        const name = escapeHtml(f.name || "");
+        const link = f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`;
+
+        const descObj = logMap.get(f.id);
+        const descText = descObj?.description ? escapeHtml(descObj.description).replaceAll("\n", "<br/>") : "";
+
+        return `
+          <tr>
+            <td>${escapeHtml(t)}</td>
+            <td>${escapeHtml(proj)}</td>
+            <td>${escapeHtml(seq)}</td>
+            <td><a href="${link}" target="_blank" rel="noopener noreferrer">${name}</a></td>
+            <td style="text-align:right;">${escapeHtml(size)}</td>
+            <td class="desc">${descText}</td>
+          </tr>
+        `;
+      }).join("");
+
+      history.innerHTML = `
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Date (JST)</th>
+                <th>Project</th>
+                <th>Seq</th>
+                <th>File</th>
+                <th style="text-align:right;">Size</th>
+                <th>Description (Sheets)</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    // ---------- Token client ----------
+    const tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CONFIG.CLIENT_ID,
+      scope: CONFIG.SCOPES,
+      callback: async (resp) => {
+        accessToken = resp.access_token;
+        try {
+          myEmail = await fetchMyEmail(accessToken);
+          setLoggedIn(myEmail);
+
+          if (adminLink) {
+            adminLink.style.display =
+              (myEmail || "").toLowerCase() === (CONFIG.ADMIN_EMAIL || "").toLowerCase()
+                ? "inline-flex"
+                : "none";
+          }
+
+          btnReloadProjects.disabled = false;
+          descModeCommon.disabled = false;
+          descModePerFile.disabled = false;
+          templateSelect.disabled = false;
+          desc.disabled = false;
+          fileInput.disabled = false;
+
+          initTemplates();
+          updateDescModeUI();
+          await loadProjects();
+          await loadMyHistory(20);
+
+        } catch (e) {
+          console.error(e);
+          me.textContent = "Post-login step failed. Check console.";
+        }
+      }
+    });
+
+    btnLogin.onclick = () => tokenClient.requestAccessToken();
+    btnLogout.onclick = () => setLoggedOut();
+
+    btnReloadProjects.onclick = async () => {
+      try { await loadProjects(); }
+      catch (e) { console.error(e); alert("Failed to load projects (see console)"); }
+    };
+
+    btnReloadHistory.onclick = async () => {
+      try { await loadMyHistory(20); }
+      catch (e) { console.error(e); alert("Failed to load history (see console)"); }
+    };
+
+    historyProjectFilter.onchange = async () => {
+      try { await loadMyHistory(20); }
+      catch (e) { console.error(e); alert("Failed to load history (see console)"); }
+    };
+
+    // ---------- Upload click (multi) ----------
+    btnUpload.onclick = async () => {
+      try {
+        const files = fileInput.files;
+        if (!files || files.length === 0) return alert("Please select video files");
+
+        const p = getSelectedProjectMeta();
+
+        const perFile = descModePerFile.checked;
+        const commonText = desc.value || "";
+        const perDescMap = perFile ? getPerFileDescriptions() : new Map();
+
+        const fileArr = [...files];
+        const totalBytes = fileArr.reduce((a, f) => a + f.size, 0);
+        let doneBytesBefore = 0;
+
+        btnUpload.disabled = true;
+        setProgress(0);
+        statusLine.textContent = `Uploading ${fileArr.length} file(s)...`;
+        speedText.textContent = "Speed: -";
+        etaText.textContent = "ETA: -";
+
+        const results = [];
+        const dateStr = yyyymmddTokyo();
+
+        for (let i = 0; i < fileArr.length; i++) {
+          const file = fileArr[i];
+
+          const { seq } = await reserveNextSeq(p.projectId);
+
+          const ext = getFileExt(file.name);
+          const finalName = `${p.projectId}_${dateStr}_${pad4(seq)}${ext}`;
+
+          currentFileText.textContent = `Current: ${i + 1}/${fileArr.length}  ${file.name}`;
+          finalNameText.textContent = `Final name: ${finalName}`;
+
+          const description = perFile ? (perDescMap.get(i) || "") : commonText;
+
+          const appProps = {
+            schema: CONFIG.APP_SCHEMA,
+            projectId: p.projectId,
+            projectNo: String(p.projectNo),
+            seq: String(seq),
+            uploaderEmail: myEmail
+          };
+
+          const uploadUrl = await startResumableSession({
+            fileName: finalName,
+            folderId: p.folderId,
+            description,
+            file,
+            appProps
+          });
+
+          const uploaded = await uploadInChunks(uploadUrl, file, (st) => {
+            const overall = Math.floor(((doneBytesBefore + st.fileOffset) / totalBytes) * 100);
+            setProgress(overall);
+
+            speedText.textContent = `Speed: ${formatSpeed(st.speedBps)}`;
+
+            const remainingOverall = totalBytes - (doneBytesBefore + st.fileOffset);
+            const etaOverall = st.speedBps > 0 ? (remainingOverall / st.speedBps) : Infinity;
+            etaText.textContent = `ETA: ${formatETA(etaOverall)}`;
+          });
+
+          const fileId = uploaded.id;
+          const driveLink = `https://drive.google.com/file/d/${fileId}/view`;
+          const templateId = templateSelect.value || "none";
+
+          await appendLogRow([
+            new Date().toISOString(),
+            p.projectId,
+            myEmail,
+            String(seq),
+            finalName,
+            String(file.size),
+            description,
+            fileId,
+            driveLink,
+            templateId,
+            "v1.0"
+          ]);
+
+          results.push({ finalName, driveLink });
+          doneBytesBefore += file.size;
+        }
+
+        setProgress(100);
+        statusLine.textContent = `Done: ${fileArr.length} file(s) uploaded.`;
+        speedText.textContent = "Speed: -";
+        etaText.textContent = "ETA: 00:00";
+
+        if (results.length) {
+          alert("Upload complete:\n" + results.map(r => r.finalName).join("\n"));
+        } else {
+          alert("Upload complete");
+        }
+
+        progressWrap.style.display = "none";
+
+        // ✅ Clear file selection and reset upload form
+        resetUploadFormUI();
+
+        // ✅ Reload UI data
+        await loadProjects();
+        await loadMyHistory(20);
+
+      } catch (e) {
+        console.error(e);
+        alert("Upload failed (see console)");
+      } finally {
+        btnUpload.disabled = false;
+      }
+    };
+
+    // init
+    setLoggedOut();
+  </script>
+</body>
+</html>
