@@ -133,6 +133,7 @@
 
     let accessToken = null;
     let myEmail = "";
+    let lastLogMap = new Map(); // driveFileId -> { rowNum, description, fileName }
 
     const me = document.getElementById("me");
     const btnLogin = document.getElementById("btnLogin");
@@ -153,7 +154,8 @@
     const btnUpload = document.getElementById("btnUpload");
 
     const recordingDateInput = document.getElementById("recordingDate");
-const progressWrap = document.getElementById("progressWrap");
+
+    const progressWrap = document.getElementById("progressWrap");
     const progressBar = document.getElementById("progress");
     const progressText = document.getElementById("progressText");
 
@@ -212,7 +214,6 @@ const progressWrap = document.getElementById("progressWrap");
 
       if (adminLink) adminLink.style.display = "none";
       if (recordingDateInput) recordingDateInput.disabled = true;
-      
     }
 
     function setProgress(pct) {
@@ -627,6 +628,7 @@ const progressWrap = document.getElementById("progressWrap");
       if (!res.ok) throw new Error(await res.text());
     }
 
+    // UPDATED: also returns rowNum + fileName
     async function loadMyLogMap(limitRows = 800) {
       const range = `${CONFIG.LOG_SHEET}!A2:K`;
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
@@ -636,16 +638,22 @@ const progressWrap = document.getElementById("progressWrap");
       const data = await res.json();
       const rows = data.values || [];
 
-      const sliced = rows.slice(Math.max(0, rows.length - limitRows));
+      const startIndex = Math.max(0, rows.length - limitRows);
+      const sliced = rows.slice(startIndex);
 
       const map = new Map();
-      for (const r of sliced) {
-        const uploader = r[2] || "";
-        const driveFileId = r[7] || "";
-        const description = r[6] || "";
+      for (let i = 0; i < sliced.length; i++) {
+        const r = sliced[i];
+
+        const uploader = r[2] || "";     // C
+        const fileName = r[4] || "";     // E
+        const description = r[6] || "";  // G
+        const driveFileId = r[7] || "";  // H
         if (!driveFileId) continue;
         if (uploader !== myEmail) continue;
-        map.set(driveFileId, { description });
+
+        const rowNum = 2 + startIndex + i; // A2 is row=2
+        map.set(driveFileId, { rowNum, description, fileName });
       }
       return map;
     }
@@ -670,6 +678,63 @@ const progressWrap = document.getElementById("progressWrap");
           hour: "2-digit", minute: "2-digit"
         }).format(d);
       } catch { return dtIso; }
+    }
+
+    // NEW: parse helpers for rename
+    function extractYyyymmddFromFileName(name) {
+      // projectId_YYYYMMDD_####.ext
+      const m = (name || "").match(/^[^_]+_([0-9]{8})_[0-9]{4}\.[^\.]+$/);
+      return m ? m[1] : "";
+    }
+
+    function extractExtFromFileName(name) {
+      const idx = (name || "").lastIndexOf(".");
+      return idx >= 0 ? name.slice(idx) : "";
+    }
+
+    // NEW: Drive rename + appProperties.recordingDate update
+    async function updateDriveFileNameAndRecordingDate(fileId, newName, newRecordingDate) {
+      const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,appProperties`;
+      const body = {
+        name: newName,
+        appProperties: { recordingDate: String(newRecordingDate || "") }
+      };
+
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+
+    // NEW: update Sheets row E(fileName) + G(description) (keep F=sizeBytes)
+    async function updateLogRowFileNameAndDesc(rowNum, newFileName, newDesc) {
+      const range = `${CONFIG.LOG_SHEET}!E${rowNum}:G${rowNum}`;
+      const url =
+        `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}` +
+        `?valueInputOption=USER_ENTERED`;
+
+      const readRange = `${CONFIG.LOG_SHEET}!F${rowNum}:F${rowNum}`;
+      const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(readRange)}`;
+      const r0 = await fetch(readUrl, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!r0.ok) throw new Error(await r0.text());
+      const d0 = await r0.json();
+      const sizeBytes = d0.values?.[0]?.[0] ?? "";
+
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ values: [[newFileName, String(sizeBytes), newDesc]] })
+      });
+      if (!res.ok) throw new Error(await res.text());
     }
 
     async function loadMyHistory(limit = 20) {
@@ -708,26 +773,55 @@ const progressWrap = document.getElementById("progressWrap");
       }
 
       const logMap = await loadMyLogMap(800);
+      lastLogMap = logMap;
 
       const rows = files.map(f => {
         const proj = f.appProperties?.projectId || "-";
         const seq  = f.appProperties?.seq || "-";
         const t    = toTokyo(f.createdTime);
         const size = formatBytes(f.size);
-        const name = escapeHtml(f.name || "");
+        const nameRaw = f.name || "";
+        const name = escapeHtml(nameRaw);
         const link = f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`;
 
         const descObj = logMap.get(f.id);
-        const descText = descObj?.description ? escapeHtml(descObj.description).replaceAll("\n", "<br/>") : "";
+        const descTextRaw = descObj?.description || "";
+        const descText = descTextRaw ? escapeHtml(descTextRaw).replaceAll("\n", "<br/>") : "";
+
+        const currentDate = extractYyyymmddFromFileName(nameRaw) || (f.appProperties?.recordingDate || "");
 
         return `
-          <tr>
+          <tr data-file-id="${escapeHtml(f.id)}">
             <td>${escapeHtml(t)}</td>
             <td>${escapeHtml(proj)}</td>
             <td>${escapeHtml(seq)}</td>
             <td><a href="${link}" target="_blank" rel="noopener noreferrer">${name}</a></td>
             <td style="text-align:right;">${escapeHtml(size)}</td>
-            <td class="desc">${descText}</td>
+
+            <td class="desc">
+              <div class="descView">${descText}</div>
+
+              <div class="descEdit" style="display:none; margin-top:8px;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <label class="label" style="margin:0;">Recording date</label>
+                  <input class="editDate" type="text" inputmode="numeric" placeholder="YYYYMMDD" value="${escapeHtml(currentDate)}" style="width:120px;" />
+                </div>
+
+                <div style="height:6px;"></div>
+                <textarea class="editDesc" rows="4" style="width:100%;">${escapeHtml(descTextRaw)}</textarea>
+
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                  <button class="btnPrimary btnSaveEdit" type="button">Save</button>
+                  <button class="btnGhost btnCancelEdit" type="button">Cancel</button>
+                </div>
+
+                <div class="small mono editStatus" style="margin-top:6px;"></div>
+              </div>
+            </td>
+
+            <td style="white-space:nowrap;">
+              <button class="btnGhost btnStartEdit" type="button">Edit</button>
+            </td>
           </tr>
         `;
       }).join("");
@@ -743,6 +837,7 @@ const progressWrap = document.getElementById("progressWrap");
                 <th>File</th>
                 <th style="text-align:right;">Size</th>
                 <th>Description (Sheets)</th>
+                <th>Edit</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -750,6 +845,93 @@ const progressWrap = document.getElementById("progressWrap");
         </div>
       `;
     }
+
+    // NEW: inline edit event delegation
+    history.addEventListener("click", async (ev) => {
+      const btn = ev.target?.closest("button");
+      if (!btn) return;
+
+      const tr = ev.target.closest("tr[data-file-id]");
+      if (!tr) return;
+
+      const fileId = tr.getAttribute("data-file-id");
+      if (!fileId) return;
+
+      const editWrap = tr.querySelector(".descEdit");
+      const viewWrap = tr.querySelector(".descView");
+      const statusEl = tr.querySelector(".editStatus");
+
+      if (btn.classList.contains("btnStartEdit")) {
+        if (editWrap) editWrap.style.display = "block";
+        if (viewWrap) viewWrap.style.display = "none";
+        btn.disabled = true;
+        return;
+      }
+
+      if (btn.classList.contains("btnCancelEdit")) {
+        if (editWrap) editWrap.style.display = "none";
+        if (viewWrap) viewWrap.style.display = "block";
+        const startBtn = tr.querySelector(".btnStartEdit");
+        if (startBtn) startBtn.disabled = false;
+        if (statusEl) statusEl.textContent = "";
+        return;
+      }
+
+      if (btn.classList.contains("btnSaveEdit")) {
+        const startBtn = tr.querySelector(".btnStartEdit");
+        const dateInput = tr.querySelector(".editDate");
+        const descInput = tr.querySelector(".editDesc");
+
+        const newDate = normalizeDateInputToYyyymmdd(dateInput?.value || "");
+        const newDesc = (descInput?.value || "").trim();
+
+        if (!newDate) {
+          if (statusEl) statusEl.textContent = "Invalid date. Use YYYYMMDD or YYYY-MM-DD.";
+          return;
+        }
+        if (!newDesc) {
+          if (statusEl) statusEl.textContent = "Description is required.";
+          return;
+        }
+
+        const rowInfo = lastLogMap.get(fileId);
+        if (!rowInfo?.rowNum) {
+          if (statusEl) statusEl.textContent = "Log row not found (try Refresh history).";
+          return;
+        }
+
+        const a = tr.querySelector("td:nth-child(4) a");
+        const currentName = a?.textContent || "";
+        const ext = extractExtFromFileName(currentName);
+
+        const projectId = tr.querySelector("td:nth-child(2)")?.textContent || "";
+        const seqStr = tr.querySelector("td:nth-child(3)")?.textContent || "";
+        const seqNum = Number(seqStr);
+        if (!projectId || !Number.isFinite(seqNum)) {
+          if (statusEl) statusEl.textContent = "Cannot parse projectId/seq from row.";
+          return;
+        }
+
+        const newName = `${projectId}_${newDate}_${pad4(seqNum)}${ext}`;
+
+        try {
+          btn.disabled = true;
+          if (startBtn) startBtn.disabled = true;
+          if (statusEl) statusEl.textContent = "Saving...";
+
+          await updateDriveFileNameAndRecordingDate(fileId, newName, newDate);
+          await updateLogRowFileNameAndDesc(rowInfo.rowNum, newName, newDesc);
+
+          if (statusEl) statusEl.textContent = "Saved.";
+          await loadMyHistory(20);
+        } catch (e) {
+          console.error(e);
+          if (statusEl) statusEl.textContent = "Save failed. See console.";
+        } finally {
+          btn.disabled = false;
+        }
+      }
+    });
 
     // ---------- Token client ----------
     const tokenClient = google.accounts.oauth2.initTokenClient({
@@ -762,7 +944,6 @@ const progressWrap = document.getElementById("progressWrap");
           setLoggedIn(myEmail);
 
           if (recordingDateInput) recordingDateInput.disabled = false;
-          
 
           if (adminLink) {
             adminLink.style.display =
@@ -778,7 +959,6 @@ const progressWrap = document.getElementById("progressWrap");
           desc.disabled = false;
           fileInput.disabled = false;
           if (recordingDateInput) recordingDateInput.disabled = false;
-          
 
           initTemplates();
           updateDescModeUI();
@@ -831,7 +1011,7 @@ const progressWrap = document.getElementById("progressWrap");
         const p = getSelectedProjectMeta();
 
         const perFile = descModePerFile.checked;
-        
+
         // Require description
         if (!perFile) {
           if (!desc.value || !desc.value.trim()) {
