@@ -84,6 +84,7 @@
             <select id="videoTypeSelect" disabled></select>
             <div class="row" style="margin-top:8px;">
               <input id="videoTypeInput" type="text" placeholder="Video type text (used for upload)" disabled />
+              <span class="small">You can also enter a custom value.</span>
             </div>
             <div class="small mono" id="videoTypeInfo">Loading types from Log...</div>
           </div>
@@ -192,6 +193,7 @@
 
     const adminLink = document.getElementById("adminLink");
     const REMEMBER_KEY = "devlog_remember_signin";
+    const DEFAULT_VIDEO_TYPE = "Screen Recording";
     let availableVideoTypes = [];
     let silentAuthInProgress = false;
 
@@ -249,7 +251,7 @@
 
       history.textContent = "Signed out";
       videoTypeSelect.innerHTML = "";
-      if (videoTypeInput) videoTypeInput.value = "";
+      if (videoTypeInput) videoTypeInput.value = DEFAULT_VIDEO_TYPE;
       if (videoTypeInfo) videoTypeInfo.textContent = "Loading types from Log...";
       availableVideoTypes = [];
 
@@ -368,7 +370,7 @@
 
     function syncVideoTypeInputFromSelect() {
       if (!videoTypeInput) return;
-      videoTypeInput.value = videoTypeSelect?.value || "";
+      videoTypeInput.value = videoTypeSelect?.value || DEFAULT_VIDEO_TYPE;
       setUploadEnabledState();
     }
 
@@ -384,8 +386,11 @@
       const preferredMatch = preferredNorm
         ? types.find(t => (t || "").toLowerCase() === preferredNorm)
         : "";
+      const defaultMatch = types.find(t => (t || "").toLowerCase() === DEFAULT_VIDEO_TYPE.toLowerCase());
       if (preferredMatch) {
         videoTypeSelect.value = preferredMatch;
+      } else if (defaultMatch) {
+        videoTypeSelect.value = defaultMatch;
       } else if (types.length > 0) {
         videoTypeSelect.value = types[0];
       }
