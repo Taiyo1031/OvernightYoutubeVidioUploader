@@ -17,6 +17,10 @@
 
       <div class="authbar">
         <span class="pill" id="me">Signed out</span>
+        <label class="pill" style="display:inline-flex; align-items:center; gap:6px;">
+          <input id="rememberSignin" type="checkbox" />
+          Remember
+        </label>
         <button class="btnPrimary" id="btnLogin">Sign in</button>
         <button class="btnGhost" id="btnLogout" disabled>Sign out</button>
         <a class="pill" href="./index.html">Back</a>
@@ -36,6 +40,33 @@
           <a class="pill" id="linkRoot" target="_blank" rel="noopener noreferrer">Open Root Folder</a>
         </div>
         <p class="hint mono" id="adminInfo"></p>
+      </div>
+
+      <div class="card" id="accessCard" style="display:none;">
+        <h2>User Access</h2>
+        <p class="hint">Grant main-page access by sharing both the Spreadsheet and Root folder.</p>
+
+        <div class="row">
+          <div style="flex:1; min-width:260px;">
+            <label class="label">User email</label>
+            <input id="inviteEmail" placeholder="user@example.com" />
+          </div>
+          <div>
+            <label class="label">&nbsp;</label>
+            <button class="btnPrimary" id="btnGrantAccess">Grant access</button>
+          </div>
+          <div>
+            <label class="label">&nbsp;</label>
+            <button id="btnReloadAccess">Reload access list</button>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:8px;">
+          <span class="mono" id="accessStatus"></span>
+        </div>
+
+        <div style="height:10px;"></div>
+        <div class="tableWrap" id="accessTable"></div>
       </div>
 
       <div class="card" id="projectsCard" style="display:none;">
@@ -119,8 +150,11 @@
 
     let accessToken = null;
     let myEmail = "";
+    let silentAuthInProgress = false;
+    const REMEMBER_KEY = "devlog_admin_remember_signin";
 
     const me = document.getElementById("me");
+    const rememberSignin = document.getElementById("rememberSignin");
     const btnLogin = document.getElementById("btnLogin");
     const btnLogout = document.getElementById("btnLogout");
 
@@ -128,12 +162,18 @@
     const blockedMsg = document.getElementById("blockedMsg");
 
     const adminCard = document.getElementById("adminCard");
+    const accessCard = document.getElementById("accessCard");
     const projectsCard = document.getElementById("projectsCard");
     const filesCard = document.getElementById("filesCard");
 
     const linkSheet = document.getElementById("linkSheet");
     const linkRoot  = document.getElementById("linkRoot");
     const adminInfo = document.getElementById("adminInfo");
+    const inviteEmail = document.getElementById("inviteEmail");
+    const btnGrantAccess = document.getElementById("btnGrantAccess");
+    const btnReloadAccess = document.getElementById("btnReloadAccess");
+    const accessStatus = document.getElementById("accessStatus");
+    const accessTable = document.getElementById("accessTable");
 
     const newProjectId = document.getElementById("newProjectId");
     const newProjectName = document.getElementById("newProjectName");
@@ -159,6 +199,15 @@
     }
     function pad3(n){ return String(n).padStart(3,"0"); }
     function nowISO(){ return new Date().toISOString(); }
+    function getRememberEnabled(){
+      try { return localStorage.getItem(REMEMBER_KEY) !== "0"; }
+      catch { return true; }
+    }
+    function setRememberEnabled(v){
+      try {
+        localStorage.setItem(REMEMBER_KEY, v ? "1" : "0");
+      } catch {}
+    }
 
     function sheetUrl(){
       return `https://docs.google.com/spreadsheets/d/${CONFIG.SPREADSHEET_ID}/edit`;
@@ -179,6 +228,7 @@
     function showBlocked(msg){
       blockedCard.style.display = "block";
       adminCard.style.display = "none";
+      accessCard.style.display = "none";
       projectsCard.style.display = "none";
       filesCard.style.display = "none";
       blockedMsg.textContent = msg;
@@ -187,8 +237,124 @@
     function showAdmin(){
       blockedCard.style.display = "none";
       adminCard.style.display = "block";
+      accessCard.style.display = "block";
       projectsCard.style.display = "block";
       filesCard.style.display = "block";
+    }
+
+    function normEmail(v){
+      return (v || "").trim().toLowerCase();
+    }
+    function isValidEmail(v){
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normEmail(v));
+    }
+
+    // ----- Drive permissions (access management) -----
+    async function driveCreateUserPermission(fileId, email, role = "writer") {
+      const url =
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions` +
+        `?sendNotificationEmail=true&supportsAllDrives=true&fields=id,type,role,emailAddress`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          type: "user",
+          role,
+          emailAddress: email
+        })
+      });
+
+      if (res.ok) return await res.json();
+
+      const t = await res.text();
+      // Google may return an error when permission already exists; treat as success.
+      if (res.status === 409 || /already has|already exists/i.test(t)) {
+        return { alreadyExists: true };
+      }
+      throw new Error(t);
+    }
+
+    async function driveListUserPermissions(fileId) {
+      const url =
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions` +
+        `?supportsAllDrives=true&fields=permissions(id,type,role,emailAddress,displayName,deleted)`;
+      const res = await fetch(url, {
+        headers: { "Authorization": `Bearer ${accessToken}` }
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const perms = data.permissions || [];
+      return perms.filter(p => p.type === "user" && p.emailAddress && !p.deleted);
+    }
+
+    async function grantUserAccessToUploader(email) {
+      await driveCreateUserPermission(CONFIG.SPREADSHEET_ID, email, "writer");
+      await driveCreateUserPermission(CONFIG.ROOT_FOLDER_ID, email, "writer");
+
+      // Also grant existing project folders in case inheritance was broken.
+      const p = await sheetsGet(`${CONFIG.PROJECTS_SHEET}!D2:D`);
+      const folderIds = [...new Set((p.values || []).map(r => (r[0] || "").trim()).filter(Boolean))];
+      if (folderIds.length === 0) return;
+
+      const rs = await Promise.allSettled(
+        folderIds.map(fid => driveCreateUserPermission(fid, email, "writer"))
+      );
+      const failed = rs.filter(x => x.status === "rejected").length;
+      if (failed > 0) {
+        console.warn(`Grant warning: ${failed}/${folderIds.length} project folder permissions failed`);
+      }
+    }
+
+    async function loadAccessList() {
+      accessStatus.textContent = "Loading access list...";
+
+      const [sheetPerms, rootPerms] = await Promise.all([
+        driveListUserPermissions(CONFIG.SPREADSHEET_ID),
+        driveListUserPermissions(CONFIG.ROOT_FOLDER_ID)
+      ]);
+
+      const byEmail = new Map();
+      for (const p of sheetPerms) {
+        const e = normEmail(p.emailAddress);
+        if (!e) continue;
+        if (!byEmail.has(e)) byEmail.set(e, { email: e, sheetRole: "-", rootRole: "-" });
+        byEmail.get(e).sheetRole = p.role || "-";
+      }
+      for (const p of rootPerms) {
+        const e = normEmail(p.emailAddress);
+        if (!e) continue;
+        if (!byEmail.has(e)) byEmail.set(e, { email: e, sheetRole: "-", rootRole: "-" });
+        byEmail.get(e).rootRole = p.role || "-";
+      }
+
+      const rows = [...byEmail.values()]
+        .sort((a,b) => a.email.localeCompare(b.email))
+        .map(u => {
+          const ok = (u.sheetRole !== "-" && u.rootRole !== "-");
+          return `
+            <tr>
+              <td class="mono">${esc(u.email)}</td>
+              <td class="mono">${esc(u.sheetRole)}</td>
+              <td class="mono">${esc(u.rootRole)}</td>
+              <td>${ok ? "OK" : "Missing permission"}</td>
+            </tr>
+          `;
+        }).join("");
+
+      accessTable.innerHTML = `
+        <table>
+          <thead>
+            <tr><th>Email</th><th>Sheet</th><th>Root Folder</th><th>Status</th></tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="4" class="mono">No user permissions found.</td></tr>`}</tbody>
+        </table>
+      `;
+
+      accessStatus.textContent = `${byEmail.size} user(s) listed`;
     }
 
     // ----- Sheets helpers -----
@@ -550,7 +716,24 @@
     const tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CONFIG.CLIENT_ID,
       scope: CONFIG.SCOPES,
+      error_callback: (err) => {
+        console.error("Google OAuth error:", err);
+        if (silentAuthInProgress) {
+          silentAuthInProgress = false;
+          return;
+        }
+        if (err?.type === "popup_failed_to_open") {
+          alert("Google sign-in popup was blocked. Allow popups for this site, then try again.");
+          return;
+        }
+        if (err?.type === "popup_closed") {
+          alert("Google sign-in popup was closed before completion.");
+          return;
+        }
+        alert("Google sign-in failed. Check browser popup settings and try again.");
+      },
       callback: async (resp) => {
+        silentAuthInProgress = false;
         accessToken = resp.access_token;
         try{
           myEmail = await fetchMyEmail(accessToken);
@@ -568,6 +751,7 @@
           linkRoot.href = folderUrl(CONFIG.ROOT_FOLDER_ID);
           adminInfo.textContent = `Admin: ${myEmail} • Sheet: ${CONFIG.SPREADSHEET_ID} • Root: ${CONFIG.ROOT_FOLDER_ID}`;
 
+          await loadAccessList();
           await loadProjects();
           await loadFiles();
 
@@ -578,8 +762,20 @@
       }
     });
 
-    btnLogin.onclick = () => tokenClient.requestAccessToken();
-    btnLogout.onclick = () => location.reload();
+    if (rememberSignin) {
+      rememberSignin.checked = getRememberEnabled();
+      rememberSignin.onchange = () => setRememberEnabled(!!rememberSignin.checked);
+    }
+
+    btnLogin.onclick = () => {
+      setRememberEnabled(!!rememberSignin?.checked);
+      tokenClient.requestAccessToken();
+    };
+    btnLogout.onclick = () => {
+      setRememberEnabled(false);
+      if (rememberSignin) rememberSignin.checked = false;
+      location.reload();
+    };
 
     // ----- events -----
     btnReloadProjects.onclick = async () => {
@@ -587,6 +783,34 @@
     };
     btnAddProject.onclick = async () => {
       try{ await addProject(); }catch(e){ console.error(e); alert("Failed to add project"); btnAddProject.disabled=false; }
+    };
+
+    btnGrantAccess.onclick = async () => {
+      const email = normEmail(inviteEmail.value);
+      if (!isValidEmail(email)) return alert("Enter a valid email address");
+      try{
+        btnGrantAccess.disabled = true;
+        accessStatus.textContent = `Granting access to ${email}...`;
+        await grantUserAccessToUploader(email);
+        inviteEmail.value = "";
+        await loadAccessList();
+        alert(`Access granted: ${email}\n\nThey should sign out/in once and try index.html again.`);
+      }catch(e){
+        console.error(e);
+        alert("Failed to grant access (see console)");
+      }finally{
+        btnGrantAccess.disabled = false;
+      }
+    };
+
+    btnReloadAccess.onclick = async () => {
+      try{ await loadAccessList(); }catch(e){ console.error(e); alert("Failed to load access list"); }
+    };
+
+    inviteEmail.onkeydown = async (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      await btnGrantAccess.onclick();
     };
 
     btnReloadFiles.onclick = async () => {
@@ -619,6 +843,11 @@
 
     // initial state
     showBlocked("Please sign in as admin.");
+    if (getRememberEnabled()) {
+      silentAuthInProgress = true;
+      try { tokenClient.requestAccessToken({ prompt: "" }); }
+      catch { silentAuthInProgress = false; }
+    }
   </script>
 </body>
 </html>

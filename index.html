@@ -17,6 +17,10 @@
 
       <div class="authbar">
         <span class="pill" id="me">Signed out</span>
+        <label class="pill" style="display:inline-flex; align-items:center; gap:6px;">
+          <input id="rememberSignin" type="checkbox" />
+          Remember
+        </label>
         <button class="btnPrimary" id="btnLogin">Sign in with Google</button>
         <button class="btnGhost" id="btnLogout" disabled>Sign out</button>
         <a class="pill" id="adminLink" href="./admin.html" style="display:none;">Admin</a>
@@ -76,9 +80,21 @@
 
         <div class="row" style="margin-top:10px;">
           <div style="flex:1; min-width:280px;">
+            <label class="label">Video type</label>
+            <select id="videoTypeSelect" disabled></select>
+            <div class="row" style="margin-top:8px;">
+              <input id="videoTypeInput" type="text" placeholder="Video type text (used for upload)" disabled />
+            </div>
+            <div class="small mono" id="videoTypeInfo">Loading types from Log...</div>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div style="flex:1; min-width:280px;">
             <label class="label">Video files</label>
             <input id="file" type="file" accept="video/*" multiple disabled />
             <div class="small">Tip: Upload order is the selected file order. Files upload sequentially for stability.</div>
+            <div class="small mono" id="selectedSizeText">Selected: 0 file(s), total -</div>
           </div>
         </div>
 
@@ -136,6 +152,7 @@
     let lastLogMap = new Map(); // driveFileId -> { rowNum, description, fileName }
 
     const me = document.getElementById("me");
+    const rememberSignin = document.getElementById("rememberSignin");
     const btnLogin = document.getElementById("btnLogin");
     const btnLogout = document.getElementById("btnLogout");
 
@@ -150,7 +167,11 @@
 
     const templateSelect = document.getElementById("templateSelect");
     const desc = document.getElementById("desc");
+    const videoTypeSelect = document.getElementById("videoTypeSelect");
+    const videoTypeInput = document.getElementById("videoTypeInput");
+    const videoTypeInfo = document.getElementById("videoTypeInfo");
     const fileInput = document.getElementById("file");
+    const selectedSizeText = document.getElementById("selectedSizeText");
     const btnUpload = document.getElementById("btnUpload");
 
     const recordingDateInput = document.getElementById("recordingDate");
@@ -170,6 +191,19 @@
     const btnReloadHistory = document.getElementById("btnReloadHistory");
 
     const adminLink = document.getElementById("adminLink");
+    const REMEMBER_KEY = "devlog_remember_signin";
+    let availableVideoTypes = [];
+    let silentAuthInProgress = false;
+
+    function getRememberEnabled() {
+      try { return localStorage.getItem(REMEMBER_KEY) !== "0"; }
+      catch { return true; }
+    }
+    function setRememberEnabled(v) {
+      try {
+        localStorage.setItem(REMEMBER_KEY, v ? "1" : "0");
+      } catch {}
+    }
 
     // ---------- UI helpers ----------
     function setLoggedIn(email) {
@@ -192,6 +226,8 @@
 
       templateSelect.disabled = true;
       desc.disabled = true;
+      videoTypeSelect.disabled = true;
+      videoTypeInput.disabled = true;
       fileInput.disabled = true;
       btnUpload.disabled = true;
 
@@ -209,8 +245,13 @@
       etaText.textContent = "ETA: -";
       currentFileText.textContent = "";
       finalNameText.textContent = "";
+      if (selectedSizeText) selectedSizeText.textContent = "Selected: 0 file(s), total -";
 
       history.textContent = "Signed out";
+      videoTypeSelect.innerHTML = "";
+      if (videoTypeInput) videoTypeInput.value = "";
+      if (videoTypeInfo) videoTypeInfo.textContent = "Loading types from Log...";
+      availableVideoTypes = [];
 
       if (adminLink) adminLink.style.display = "none";
       if (recordingDateInput) recordingDateInput.disabled = true;
@@ -311,10 +352,83 @@
 
       // Reset recording date (will be set again on next file select)
       if (recordingDateInput) recordingDateInput.value = "";
+      if (selectedSizeText) selectedSizeText.textContent = "Selected: 0 file(s), total -";
 
       // Reset status text
       currentFileText.textContent = "";
       finalNameText.textContent = "";
+    }
+
+    // ---------- Video types ----------
+    function setUploadEnabledState() {
+      const hasProject = !!projectSelect?.value;
+      const hasVideoTypeText = !!((videoTypeInput?.value || "").trim());
+      btnUpload.disabled = !(hasProject && hasVideoTypeText && !!accessToken);
+    }
+
+    function syncVideoTypeInputFromSelect() {
+      if (!videoTypeInput) return;
+      videoTypeInput.value = videoTypeSelect?.value || "";
+      setUploadEnabledState();
+    }
+
+    function renderVideoTypeSelect(types, preferred = "") {
+      videoTypeSelect.innerHTML = "";
+      for (const t of types) {
+        const opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        videoTypeSelect.appendChild(opt);
+      }
+      const preferredNorm = (preferred || "").trim().toLowerCase();
+      const preferredMatch = preferredNorm
+        ? types.find(t => (t || "").toLowerCase() === preferredNorm)
+        : "";
+      if (preferredMatch) {
+        videoTypeSelect.value = preferredMatch;
+      } else if (types.length > 0) {
+        videoTypeSelect.value = types[0];
+      }
+      syncVideoTypeInputFromSelect();
+    }
+
+    async function loadVideoTypesFromLog(preferred = "") {
+      const range = `${CONFIG.LOG_SHEET}!L2:L`;
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
+      const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      const rows = data.values || [];
+
+      const uniq = new Map();
+      for (const r of rows) {
+        const raw = (r?.[0] || "").trim();
+        if (!raw) continue;
+        const k = raw.toLowerCase();
+        if (!uniq.has(k)) uniq.set(k, raw);
+      }
+
+      availableVideoTypes = Array.from(uniq.values()).sort((a, b) => a.localeCompare(b));
+      renderVideoTypeSelect(availableVideoTypes, preferred);
+
+      if (availableVideoTypes.length === 0) {
+        videoTypeSelect.disabled = true;
+        if (videoTypeInfo) videoTypeInfo.textContent = "No video type in Log yet. Enter text manually.";
+      } else {
+        videoTypeSelect.disabled = false;
+        if (videoTypeInfo) videoTypeInfo.textContent = `${availableVideoTypes.length} type(s) loaded from Log sheet`;
+      }
+      setUploadEnabledState();
+    }
+
+    // ---------- File selection summary ----------
+    function updateSelectedSize(files) {
+      const list = files ? [...files] : [];
+      const total = list.reduce((a, f) => a + Number(f.size || 0), 0);
+      const totalText = total > 0 ? formatBytes(total) : "-";
+      if (selectedSizeText) {
+        selectedSizeText.textContent = `Selected: ${list.length} file(s), total ${totalText}`;
+      }
     }
 
     // ---------- Auth ----------
@@ -325,6 +439,11 @@
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       return data.email || "";
+    }
+
+    function isPermissionDeniedError(err) {
+      const s = (err?.message || String(err || ""));
+      return /PERMISSION_DENIED|does not have permission|\"code\"\s*:\s*403/i.test(s);
     }
 
     // ---------- Templates ----------
@@ -391,8 +510,12 @@
 
     fileInput.onchange = () => {
       const files = fileInput.files;
-      if (!files || files.length === 0) return;
+      if (!files || files.length === 0) {
+        updateSelectedSize([]);
+        return;
+      }
       buildPerFileEditors(files);
+      updateSelectedSize(files);
       // default recording date = today
       if (recordingDateInput) recordingDateInput.value = ymdTokyo(new Date());
     };
@@ -427,7 +550,7 @@
         opt.textContent = "(No active projects)";
         projectSelect.appendChild(opt);
         projectSelect.disabled = true;
-        btnUpload.disabled = true;
+        setUploadEnabledState();
         return;
       }
 
@@ -442,7 +565,7 @@
       }
 
       projectSelect.disabled = false;
-      btnUpload.disabled = false;
+      setUploadEnabledState();
 
       // Sync history filter options
       historyProjectFilter.innerHTML = `<option value="">All projects</option>`;
@@ -592,7 +715,7 @@
 
     // Smallest available seq per project (fills gaps). Scans last N rows in Log.
     async function getNextSeqSmallestAvailable(projectId, limitRows = 5000) {
-      const range = `${CONFIG.LOG_SHEET}!A2:K`;
+      const range = `${CONFIG.LOG_SHEET}!A2:L`;
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
       const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
       if (!res.ok) throw new Error(await res.text());
@@ -630,7 +753,7 @@
 
     // UPDATED: also returns rowNum + fileName
     async function loadMyLogMap(limitRows = 800) {
-      const range = `${CONFIG.LOG_SHEET}!A2:K`;
+      const range = `${CONFIG.LOG_SHEET}!A2:L`;
       const url = `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}`;
 
       const res = await fetch(url, { headers: { "Authorization": `Bearer ${accessToken}` } });
@@ -649,11 +772,12 @@
         const fileName = r[4] || "";     // E
         const description = r[6] || "";  // G
         const driveFileId = r[7] || "";  // H
+        const videoType = r[11] || "";   // L
         if (!driveFileId) continue;
         if (uploader !== myEmail) continue;
 
         const rowNum = 2 + startIndex + i; // A2 is row=2
-        map.set(driveFileId, { rowNum, description, fileName });
+        map.set(driveFileId, { rowNum, description, fileName, videoType });
       }
       return map;
     }
@@ -692,12 +816,15 @@
       return idx >= 0 ? name.slice(idx) : "";
     }
 
-    // NEW: Drive rename + appProperties.recordingDate update
-    async function updateDriveFileNameAndRecordingDate(fileId, newName, newRecordingDate) {
+    // NEW: Drive rename + appProperties update
+    async function updateDriveFileMeta(fileId, newName, newRecordingDate, newVideoType) {
       const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,appProperties`;
       const body = {
         name: newName,
-        appProperties: { recordingDate: String(newRecordingDate || "") }
+        appProperties: {
+          recordingDate: String(newRecordingDate || ""),
+          videoType: String(newVideoType || "")
+        }
       };
 
       const res = await fetch(url, {
@@ -712,8 +839,8 @@
       return await res.json();
     }
 
-    // NEW: update Sheets row E(fileName) + G(description) (keep F=sizeBytes)
-    async function updateLogRowFileNameAndDesc(rowNum, newFileName, newDesc) {
+    // NEW: update Sheets row E(fileName) + G(description) + L(videoType) (keep F=sizeBytes)
+    async function updateLogRowFileNameDescAndVideoType(rowNum, newFileName, newDesc, newVideoType) {
       const range = `${CONFIG.LOG_SHEET}!E${rowNum}:G${rowNum}`;
       const url =
         `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(range)}` +
@@ -735,6 +862,20 @@
         body: JSON.stringify({ values: [[newFileName, String(sizeBytes), newDesc]] })
       });
       if (!res.ok) throw new Error(await res.text());
+
+      const typeRange = `${CONFIG.LOG_SHEET}!L${rowNum}:L${rowNum}`;
+      const typeUrl =
+        `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(typeRange)}` +
+        `?valueInputOption=USER_ENTERED`;
+      const rType = await fetch(typeUrl, {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ values: [[String(newVideoType || "")]] })
+      });
+      if (!rType.ok) throw new Error(await rType.text());
     }
 
     async function loadMyHistory(limit = 20) {
@@ -787,6 +928,18 @@
         const descObj = logMap.get(f.id);
         const descTextRaw = descObj?.description || "";
         const descText = descTextRaw ? escapeHtml(descTextRaw).replaceAll("\n", "<br/>") : "";
+        const videoTypeRaw = descObj?.videoType || (f.appProperties?.videoType || "");
+        const videoTypeText = videoTypeRaw ? escapeHtml(videoTypeRaw) : "-";
+        const editTypeOptions = (() => {
+          const list = [...availableVideoTypes];
+          if (videoTypeRaw && !list.some(x => x.toLowerCase() === videoTypeRaw.toLowerCase())) {
+            list.push(videoTypeRaw);
+          }
+          return list.map(v => {
+            const selected = v === videoTypeRaw ? " selected" : "";
+            return `<option value="${escapeHtml(v)}"${selected}>${escapeHtml(v)}</option>`;
+          }).join("");
+        })();
 
         const currentDate = extractYyyymmddFromFileName(nameRaw) || (f.appProperties?.recordingDate || "");
 
@@ -797,6 +950,7 @@
             <td>${escapeHtml(seq)}</td>
             <td><a href="${link}" target="_blank" rel="noopener noreferrer">${name}</a></td>
             <td style="text-align:right;">${escapeHtml(size)}</td>
+            <td>${videoTypeText}</td>
 
             <td class="desc">
               <div class="descView">${descText}</div>
@@ -805,6 +959,12 @@
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                   <label class="label" style="margin:0;">Recording date</label>
                   <input class="editDate" type="text" inputmode="numeric" placeholder="YYYYMMDD" value="${escapeHtml(currentDate)}" style="width:120px;" />
+                </div>
+
+                <div style="height:6px;"></div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <label class="label" style="margin:0;">Video type (editable)</label>
+                  <select class="editVideoType" style="min-width:220px;">${editTypeOptions}</select>
                 </div>
 
                 <div style="height:6px;"></div>
@@ -820,7 +980,7 @@
             </td>
 
             <td style="white-space:nowrap;">
-              <button class="btnGhost btnStartEdit" type="button">Edit</button>
+              <button class="btnEdit btnStartEdit" type="button">Edit</button>
             </td>
           </tr>
         `;
@@ -836,6 +996,7 @@
                 <th>Seq</th>
                 <th>File</th>
                 <th style="text-align:right;">Size</th>
+                <th>Video type</th>
                 <th>Description (Sheets)</th>
                 <th>Edit</th>
               </tr>
@@ -881,9 +1042,11 @@
         const startBtn = tr.querySelector(".btnStartEdit");
         const dateInput = tr.querySelector(".editDate");
         const descInput = tr.querySelector(".editDesc");
+        const typeInput = tr.querySelector(".editVideoType");
 
         const newDate = normalizeDateInputToYyyymmdd(dateInput?.value || "");
         const newDesc = (descInput?.value || "").trim();
+        const newVideoType = (typeInput?.value || "").trim();
 
         if (!newDate) {
           if (statusEl) statusEl.textContent = "Invalid date. Use YYYYMMDD or YYYY-MM-DD.";
@@ -891,6 +1054,10 @@
         }
         if (!newDesc) {
           if (statusEl) statusEl.textContent = "Description is required.";
+          return;
+        }
+        if (!newVideoType) {
+          if (statusEl) statusEl.textContent = "Video type is required.";
           return;
         }
 
@@ -919,10 +1086,11 @@
           if (startBtn) startBtn.disabled = true;
           if (statusEl) statusEl.textContent = "Saving...";
 
-          await updateDriveFileNameAndRecordingDate(fileId, newName, newDate);
-          await updateLogRowFileNameAndDesc(rowInfo.rowNum, newName, newDesc);
+          await updateDriveFileMeta(fileId, newName, newDate, newVideoType);
+          await updateLogRowFileNameDescAndVideoType(rowInfo.rowNum, newName, newDesc, newVideoType);
 
           if (statusEl) statusEl.textContent = "Saved.";
+          await loadVideoTypesFromLog(newVideoType);
           await loadMyHistory(20);
         } catch (e) {
           console.error(e);
@@ -937,7 +1105,24 @@
     const tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CONFIG.CLIENT_ID,
       scope: CONFIG.SCOPES,
+      error_callback: (err) => {
+        console.error("Google OAuth error:", err);
+        if (silentAuthInProgress) {
+          silentAuthInProgress = false;
+          return;
+        }
+        if (err?.type === "popup_failed_to_open") {
+          alert("Google sign-in popup was blocked. Allow popups for this site, then try Sign in again.");
+          return;
+        }
+        if (err?.type === "popup_closed") {
+          alert("Google sign-in popup was closed before completion.");
+          return;
+        }
+        alert("Google sign-in failed. Check browser popup settings and try again.");
+      },
       callback: async (resp) => {
+        silentAuthInProgress = false;
         accessToken = resp.access_token;
         try {
           myEmail = await fetchMyEmail(accessToken);
@@ -957,10 +1142,12 @@
           descModePerFile.disabled = false;
           templateSelect.disabled = false;
           desc.disabled = false;
+          videoTypeInput.disabled = false;
           fileInput.disabled = false;
           if (recordingDateInput) recordingDateInput.disabled = false;
 
           initTemplates();
+          await loadVideoTypesFromLog();
           updateDescModeUI();
           if (recordingDateInput) recordingDateInput.disabled = false;
           setRecordingDateTodayDefault();
@@ -969,20 +1156,31 @@
 
         } catch (e) {
           console.error(e);
-          me.textContent = "Post-login step failed. Check console.";
+          if (isPermissionDeniedError(e)) {
+            me.textContent = `Signed in: ${myEmail} (No access)`;
+            history.textContent = `Access denied. Ask admin (${CONFIG.ADMIN_EMAIL}) to grant access in admin.html > User Access.`;
+            btnUpload.disabled = true;
+            if (videoTypeInfo) videoTypeInfo.textContent = "Access denied. Waiting for admin grant.";
+          } else {
+            me.textContent = "Post-login step failed. Check console.";
+          }
         }
       }
     });
 
-    const AUTO_KEY = "devlog_auto_signin";
+    if (rememberSignin) {
+      rememberSignin.checked = getRememberEnabled();
+      rememberSignin.onchange = () => setRememberEnabled(!!rememberSignin.checked);
+    }
 
     btnLogin.onclick = () => {
-      sessionStorage.setItem(AUTO_KEY, "1");
+      setRememberEnabled(!!rememberSignin?.checked);
       tokenClient.requestAccessToken();
     };
 
     btnLogout.onclick = () => {
-      sessionStorage.removeItem(AUTO_KEY);
+      setRememberEnabled(false);
+      if (rememberSignin) rememberSignin.checked = false;
       setLoggedOut();
     };
 
@@ -992,7 +1190,10 @@
     };
 
     btnReloadHistory.onclick = async () => {
-      try { await loadMyHistory(20); }
+      try {
+        await loadVideoTypesFromLog(videoTypeSelect.value || "");
+        await loadMyHistory(20);
+      }
       catch (e) { console.error(e); alert("Failed to load history (see console)"); }
     };
 
@@ -1000,6 +1201,8 @@
       try { await loadMyHistory(20); }
       catch (e) { console.error(e); alert("Failed to load history (see console)"); }
     };
+    videoTypeSelect.onchange = () => syncVideoTypeInputFromSelect();
+    videoTypeInput.oninput = () => setUploadEnabledState();
 
     // ---------- Upload click (multi) ----------
     btnUpload.onclick = async () => {
@@ -1043,6 +1246,11 @@
 
         const results = [];
         const dateStr = getSelectedRecordingYyyymmdd();
+        const selectedVideoType = (videoTypeInput.value || "").trim();
+        if (!selectedVideoType) {
+          alert("Video type is required.");
+          return;
+        }
 
         for (let i = 0; i < fileArr.length; i++) {
           const file = fileArr[i];
@@ -1063,7 +1271,8 @@
             projectNo: String(p.projectNo),
             seq: String(seq),
             uploaderEmail: myEmail,
-            recordingDate: dateStr
+            recordingDate: dateStr,
+            videoType: selectedVideoType
           };
 
           const uploadUrl = await startResumableSession({
@@ -1100,7 +1309,8 @@
             fileId,
             driveLink,
             templateId,
-            "v1.0"
+            "v1.0",
+            selectedVideoType
           ]);
 
           results.push({ finalName, driveLink });
@@ -1131,16 +1341,16 @@
         console.error(e);
         alert("Upload failed (see console)");
       } finally {
-        btnUpload.disabled = false;
+        setUploadEnabledState();
       }
     };
 
     // init
     setLoggedOut();
-
-    // try silent re-auth if user previously signed in this session
-    if (sessionStorage.getItem(AUTO_KEY) === "1") {
-      try { tokenClient.requestAccessToken({ prompt: "" }); } catch (e) {}
+    if (getRememberEnabled()) {
+      silentAuthInProgress = true;
+      try { tokenClient.requestAccessToken({ prompt: "" }); }
+      catch { silentAuthInProgress = false; }
     }
   </script>
 </body>

@@ -229,6 +229,18 @@ button:disabled{ opacity:.55; cursor:not-allowed; }
   border-color: rgba(255,255,255,.26);
 }
 
+.btnEdit{
+  background: #f59e0b;
+  border-color: #f59e0b;
+  color: #1f2937;
+  font-weight: 700;
+}
+.btnEdit:hover{
+  background: #d97706;
+  border-color: #d97706;
+  color: #ffffff;
+}
+
 hr.sep{
   border:0;
   height:1px;
