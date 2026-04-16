@@ -14,6 +14,14 @@ export const CONFIG = {
   // Admin gate (used for showing Admin button + admin.html access)
   ADMIN_EMAIL: "taiyoparent1@gmail.com",
 
+  // Accounts allowed to use this app (displayed on login screen)
+  ALLOWED_EMAILS: [
+    "taiyoparent1@gmail.com",
+    "traveler6teen@gmail.com",
+    "firakalbari@gmail.com",
+    "overnight.artelier@gmail.com",
+  ],
+
   // Chunk size for resumable upload
   CHUNK_SIZE: 8 * 1024 * 1024,
 

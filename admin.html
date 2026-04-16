@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Devlog Uploader - Admin</title>
+  <title>Devlog Uploader - プロジェクト管理</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="./style.css" />
   <script src="https://accounts.google.com/gsi/client"></script>
@@ -11,8 +11,8 @@
   <div class="container">
     <div class="header">
       <div class="brand">
-        <h1>Admin</h1>
-        <p class="sub">Restricted access • Project management • File deletion</p>
+        <h1>プロジェクト管理</h1>
+        <p class="sub">管理者専用 • プロジェクト管理 • ファイル削除</p>
       </div>
 
       <div class="authbar">
@@ -67,6 +67,7 @@
 
         <div style="height:10px;"></div>
         <div class="tableWrap" id="accessTable"></div>
+        <div id="allowedEmailsCard"></div>
       </div>
 
       <div class="card" id="projectsCard" style="display:none;">
@@ -151,7 +152,7 @@
     let accessToken = null;
     let myEmail = "";
     let silentAuthInProgress = false;
-    const REMEMBER_KEY = "devlog_admin_remember_signin";
+    const REMEMBER_KEY = "devlog_remember_signin";
 
     const me = document.getElementById("me");
     const rememberSignin = document.getElementById("rememberSignin");
@@ -355,6 +356,15 @@
       `;
 
       accessStatus.textContent = `${byEmail.size} user(s) listed`;
+
+      // 許可メールを localStorage に保存（ログイン画面表示用）
+      try {
+        const allowed = [...byEmail.values()]
+          .filter(u => u.sheetRole !== "-" && u.rootRole !== "-")
+          .map(u => u.email);
+        localStorage.setItem("devlog_allowed_emails", JSON.stringify(allowed));
+      } catch {}
+      renderAllowedEmailsEditor();
     }
 
     // ----- Sheets helpers -----
@@ -453,6 +463,33 @@
 
       await sheetsBatchUpdate(requests);
       return rowNums.length;
+    }
+
+    function renderAllowedEmailsEditor() {
+      const card = document.getElementById("allowedEmailsCard");
+      if (!card) return;
+      let stored = [];
+      try { stored = JSON.parse(localStorage.getItem("devlog_allowed_emails") || "[]"); } catch {}
+      card.innerHTML = `
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+          <div class="label">許可アカウント（ログイン画面表示用）</div>
+          <p class="hint">Access Listと連動して自動更新されます。手動で編集することも可能です（1行1件）。<br>変更後はindex.htmlをリロードすると反映されます。</p>
+          <textarea id="allowedEmailsTextarea" rows="5" style="font-family:var(--mono);">${stored.join("\n")}</textarea>
+          <div class="row" style="margin-top:8px;">
+            <button id="btnSaveAllowedEmails" class="btnPrimary">保存</button>
+            <span class="mono" id="allowedEmailsSaveStatus"></span>
+          </div>
+        </div>`;
+      document.getElementById("btnSaveAllowedEmails").onclick = () => {
+        const emails = document.getElementById("allowedEmailsTextarea").value
+          .split("\n").map(e => e.trim().toLowerCase()).filter(Boolean);
+        try {
+          localStorage.setItem("devlog_allowed_emails", JSON.stringify(emails));
+          const st = document.getElementById("allowedEmailsSaveStatus");
+          st.textContent = "保存しました";
+          setTimeout(() => { if (st) st.textContent = ""; }, 2000);
+        } catch {}
+      };
     }
 
     // ----- Projects -----
@@ -720,6 +757,9 @@
         console.error("Google OAuth error:", err);
         if (silentAuthInProgress) {
           silentAuthInProgress = false;
+          btnLogin.style.display = "";
+          showBlocked("Please sign in.");
+          me.textContent = "Signed out";
           return;
         }
         if (err?.type === "popup_failed_to_open") {
@@ -842,11 +882,20 @@
     };
 
     // initial state
-    showBlocked("Please sign in as admin.");
     if (getRememberEnabled()) {
+      // 前回ログイン済み → サイレント認証を試みる
+      me.textContent = "Signing in...";
+      btnLogin.style.display = "none";
+      showBlocked("Signing in...");
       silentAuthInProgress = true;
       try { tokenClient.requestAccessToken({ prompt: "" }); }
-      catch { silentAuthInProgress = false; }
+      catch {
+        silentAuthInProgress = false;
+        btnLogin.style.display = "";
+        showBlocked("Please sign in.");
+      }
+    } else {
+      showBlocked("Please sign in.");
     }
   </script>
 </body>

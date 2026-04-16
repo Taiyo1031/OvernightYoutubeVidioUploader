@@ -8,6 +8,27 @@
   <script src="https://accounts.google.com/gsi/client"></script>
 </head>
 <body>
+  <!-- Login screen -->
+  <div id="loginScreen">
+    <div class="loginCard">
+      <h2>Devlog Uploader</h2>
+      <p class="loginSub">Google Drive + Sheets に動画をアップロード</p>
+
+      <div class="loginAccountList">
+        <div class="loginAccountLabel">使用可能なアカウント</div>
+        <ul id="allowedEmailList"></ul>
+      </div>
+
+      <label class="loginRemember">
+        <input id="rememberSignin" type="checkbox" />
+        次回からサインインを省略
+      </label>
+
+      <button class="btnPrimary loginBtn" id="btnLogin">Sign in with Google</button>
+      <div id="loginError"></div>
+    </div>
+  </div>
+
   <div class="container">
     <div class="header">
       <div class="brand">
@@ -17,13 +38,8 @@
 
       <div class="authbar">
         <span class="pill" id="me">Signed out</span>
-        <label class="pill" style="display:inline-flex; align-items:center; gap:6px;">
-          <input id="rememberSignin" type="checkbox" />
-          Remember
-        </label>
-        <button class="btnPrimary" id="btnLogin">Sign in with Google</button>
         <button class="btnGhost" id="btnLogout" disabled>Sign out</button>
-        <a class="pill" id="adminLink" href="./admin.html" style="display:none;">Admin</a>
+        <a class="pill" id="adminLink" href="./admin.html" style="display:none;">プロジェクト管理</a>
       </div>
     </div>
 
@@ -31,75 +47,85 @@
       <!-- LEFT: Upload -->
       <div class="card">
         <h2>Upload</h2>
-        <p class="hint">Choose a project, attach files, and add descriptions. Supports multi-file uploads with per-file notes.</p>
 
-        <div class="row">
-          <div style="flex:1; min-width:260px;">
-            <label class="label">Project</label>
-            <select id="projectSelect" disabled></select>
-          </div>
-          <div>
-            <label class="label">&nbsp;</label>
-            <button id="btnReloadProjects" disabled>Reload Projects</button>
-          </div>
-        </div>
+        <!-- ── Section 1: ファイル名に関わる設定 ── -->
+        <div class="sectionBlock">
+          <div class="sectionTitle">ファイル名の設定</div>
+          <div class="sectionSub mono" id="filenamePreview">projectId_YYYYMMDD_####_label.ext</div>
 
-        <div class="row" style="margin-top:10px;">
-          <div style="flex:1; min-width:260px;">
-            <label class="label">Recording date (used in filename)</label>
-            <input id="recordingDate" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" disabled />
-            <div class="small">Default: today (JST). You can override (YYYY-MM-DD or YYYYMMDD).</div>
-          </div>
-        </div>
-
-        <hr class="sep"/>
-
-        <label class="label">Description mode</label>
-        <div class="radio">
-          <label><input type="radio" name="descMode" id="descModeCommon" checked disabled> Same for all files</label>
-          <label><input type="radio" name="descMode" id="descModePerFile" disabled> Per-file notes</label>
-        </div>
-
-        <div class="row" style="margin-top:10px;">
-          <!-- Common description -->
-          <div id="commonDescWrap" style="flex:1; min-width:280px;">
-            <label class="label">Template</label>
-            <select id="templateSelect" disabled></select>
-
-            <div style="height:10px;"></div>
-            <label class="label">Description</label>
-            <textarea id="desc" placeholder="Common description (template can prefill this)" disabled></textarea>
+          <div class="row" style="margin-top:10px;">
+            <div style="flex:1; min-width:220px;">
+              <label class="label">Project</label>
+              <select id="projectSelect" disabled></select>
+            </div>
+            <div style="align-self:flex-end;">
+              <button id="btnReloadProjects" disabled>Reload</button>
+            </div>
           </div>
 
-          <!-- Per-file description -->
-          <div id="perFileDescWrap" style="display:none; flex:1; min-width:280px;">
-            <label class="label">Per-file descriptions</label>
-            <div id="perFileList"></div>
+          <div class="row" style="margin-top:10px; gap:12px;">
+            <div style="flex:1; min-width:160px;">
+              <label class="label">Recording date</label>
+              <input id="recordingDate" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" disabled />
+              <div class="small">デフォルト: 今日(JST)</div>
+            </div>
+            <div style="flex:2; min-width:200px;">
+              <label class="label">Short label <span style="color:var(--danger,#c00);">*必須</span></label>
+              <input id="fileLabel" type="text" placeholder="" maxlength="40" disabled />
+              <div class="small">内容を示す短い説明（例: gameplay, meeting）。ファイル名末尾に入ります。</div>
+            </div>
           </div>
-        </div>
 
-        <div class="row" style="margin-top:10px;">
-          <div style="flex:1; min-width:280px;">
+          <div style="margin-top:10px;">
             <label class="label">Video type</label>
-            <select id="videoTypeSelect" disabled></select>
-            <div class="row" style="margin-top:8px;">
-              <input id="videoTypeInput" type="text" placeholder="Video type text (used for upload)" disabled />
-              <span class="small">You can also enter a custom value.</span>
+            <div class="row" style="gap:8px; align-items:center;">
+              <select id="videoTypeSelect" style="flex:1;" disabled></select>
+              <input id="videoTypeInput" type="text" style="flex:1;" placeholder="カスタム値を直接入力も可" disabled />
             </div>
             <div class="small mono" id="videoTypeInfo">Loading types from Log...</div>
           </div>
         </div>
 
-        <div class="row" style="margin-top:10px;">
-          <div style="flex:1; min-width:280px;">
-            <label class="label">Video files</label>
-            <input id="file" type="file" accept="video/*" multiple disabled />
-            <div class="small">Tip: Upload order is the selected file order. Files upload sequentially for stability.</div>
-            <div class="small mono" id="selectedSizeText">Selected: 0 file(s), total -</div>
+        <hr class="sep"/>
+
+        <!-- ── Section 2: 説明文 ── -->
+        <div class="sectionBlock">
+          <div class="sectionTitle">説明文</div>
+
+          <div class="radio" style="margin-top:6px;">
+            <label><input type="radio" name="descMode" id="descModeCommon" checked disabled> 全ファイル共通</label>
+            <label><input type="radio" name="descMode" id="descModePerFile" disabled> ファイルごとに個別入力</label>
+          </div>
+
+          <div style="margin-top:10px;">
+            <div id="commonDescWrap">
+              <label class="label">Template</label>
+              <select id="templateSelect" disabled></select>
+              <div style="height:8px;"></div>
+              <label class="label">Description</label>
+              <textarea id="desc" placeholder="説明文（テンプレートで自動入力も可）" disabled></textarea>
+            </div>
+            <div id="perFileDescWrap" style="display:none;">
+              <label class="label">Per-file descriptions</label>
+              <div id="perFileList"></div>
+            </div>
           </div>
         </div>
 
-        <div class="row" style="margin-top:12px;">
+        <hr class="sep"/>
+
+        <!-- ── Section 3: ファイル選択 ── -->
+        <div class="sectionBlock">
+          <div class="sectionTitle">動画ファイル</div>
+          <div id="dropZone" class="dropZone" style="margin-top:8px;">
+            <input id="file" type="file" accept="video/*" multiple disabled />
+            <div class="dropZoneHint">または動画ファイルをここにドロップ</div>
+          </div>
+          <div class="small">複数選択可。アップロードは選択順に順次実行されます。</div>
+          <div class="small mono" id="selectedSizeText">Selected: 0 file(s), total -</div>
+        </div>
+
+        <div class="row" style="margin-top:14px;">
           <button class="btnPrimary" id="btnUpload" disabled>Upload</button>
           <span class="mono" id="finalNameText"></span>
         </div>
@@ -117,7 +143,7 @@
         </div>
 
         <div class="footerNote">
-          Filename format: <span class="mono">projectId_YYYYMMDD_####.ext</span> (sequence is persistent per project)
+          Filename format: <span class="mono">projectId_YYYYMMDD_####_label.ext</span>
         </div>
       </div>
 
@@ -176,6 +202,7 @@
     const btnUpload = document.getElementById("btnUpload");
 
     const recordingDateInput = document.getElementById("recordingDate");
+    const fileLabelInput = document.getElementById("fileLabel");
 
     const progressWrap = document.getElementById("progressWrap");
     const progressBar = document.getElementById("progress");
@@ -193,6 +220,7 @@
 
     const adminLink = document.getElementById("adminLink");
     const REMEMBER_KEY = "devlog_remember_signin";
+    const LAST_PROJECT_KEY = "devlog_last_project";
     const DEFAULT_VIDEO_TYPE = "Screen Recording";
     let availableVideoTypes = [];
     let silentAuthInProgress = false;
@@ -202,10 +230,33 @@
       catch { return true; }
     }
     function setRememberEnabled(v) {
-      try {
-        localStorage.setItem(REMEMBER_KEY, v ? "1" : "0");
-      } catch {}
+      try { localStorage.setItem(REMEMBER_KEY, v ? "1" : "0"); } catch {}
     }
+
+    // Login screen
+    const loginScreen     = document.getElementById("loginScreen");
+    const allowedEmailList = document.getElementById("allowedEmailList");
+    const loginError      = document.getElementById("loginError");
+
+    function showLoginScreen() { loginScreen.style.display = "flex"; }
+    function hideLoginScreen() { loginScreen.style.display = "none"; }
+
+    // Populate allowed accounts list (localStorage優先、なければCONFIG.ALLOWED_EMAILSにフォールバック)
+    (function buildAllowedList() {
+      let emails = CONFIG.ALLOWED_EMAILS || [];
+      try {
+        const stored = localStorage.getItem("devlog_allowed_emails");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) emails = parsed;
+        }
+      } catch {}
+      const safe = s => (s ?? "").replace(/[&<>"']/g, c =>
+        ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[c]);
+      allowedEmailList.innerHTML = emails.length
+        ? emails.map(e => `<li>${safe(e)}</li>`).join("")
+        : "<li>（管理者にお問い合わせください）</li>";
+    })();
 
     // ---------- UI helpers ----------
     function setLoggedIn(email) {
@@ -234,6 +285,7 @@
       btnUpload.disabled = true;
 
       if (recordingDateInput) recordingDateInput.value = "";
+      if (fileLabelInput) { fileLabelInput.value = ""; fileLabelInput.disabled = true; }
 
       commonDescWrap.style.display = "block";
       perFileDescWrap.style.display = "none";
@@ -257,6 +309,15 @@
 
       if (adminLink) adminLink.style.display = "none";
       if (recordingDateInput) recordingDateInput.disabled = true;
+    }
+
+    function sanitizeLabel(s) {
+      return (s || "")
+        .trim()
+        .replace(/[\s\u3000]+/g, "-")          // 全角スペース含むスペース → ハイフン
+        .replace(/[\/\\:*?"<>|]/g, "")         // ファイル名禁止文字を除去
+        .replace(/^[-_]+|[-_]+$/g, "")         // 先頭・末尾のハイフン・アンダースコアを除去
+        .slice(0, 40);
     }
 
     function setProgress(pct) {
@@ -354,6 +415,7 @@
 
       // Reset recording date (will be set again on next file select)
       if (recordingDateInput) recordingDateInput.value = "";
+      if (fileLabelInput) fileLabelInput.value = "";
       if (selectedSizeText) selectedSizeText.textContent = "Selected: 0 file(s), total -";
 
       // Reset status text
@@ -513,6 +575,30 @@
       return map;
     }
 
+    // ドラッグ＆ドロップ
+    const dropZone = document.getElementById("dropZone");
+    dropZone.addEventListener("dragover", ev => {
+      ev.preventDefault();
+      if (!fileInput.disabled) dropZone.classList.add("dropZoneOver");
+    });
+    dropZone.addEventListener("dragleave", ev => {
+      ev.preventDefault();
+      dropZone.classList.remove("dropZoneOver");
+    });
+    dropZone.addEventListener("drop", ev => {
+      ev.preventDefault();
+      dropZone.classList.remove("dropZoneOver");
+      if (fileInput.disabled) return;
+      const videoFiles = [...(ev.dataTransfer?.files || [])].filter(f => f.type.startsWith("video/"));
+      if (!videoFiles.length) { alert("動画ファイルのみドロップできます。"); return; }
+      const dt = new DataTransfer();
+      videoFiles.forEach(f => dt.items.add(f));
+      fileInput.files = dt.files;
+      buildPerFileEditors(fileInput.files);
+      updateSelectedSize(fileInput.files);
+      if (recordingDateInput) recordingDateInput.value = ymdTokyo(new Date());
+    });
+
     fileInput.onchange = () => {
       const files = fileInput.files;
       if (!files || files.length === 0) {
@@ -570,6 +656,15 @@
       }
 
       projectSelect.disabled = false;
+
+      // 最後に選択したプロジェクトを復元
+      try {
+        const last = localStorage.getItem(LAST_PROJECT_KEY);
+        if (last && [...projectSelect.options].find(o => o.value === last)) {
+          projectSelect.value = last;
+        }
+      } catch {}
+
       setUploadEnabledState();
 
       // Sync history filter options
@@ -811,8 +906,15 @@
 
     // NEW: parse helpers for rename
     function extractYyyymmddFromFileName(name) {
-      // projectId_YYYYMMDD_####.ext
-      const m = (name || "").match(/^[^_]+_([0-9]{8})_[0-9]{4}\.[^\.]+$/);
+      // new: projectId_YYYYMMDD_####_label.ext
+      // old: projectId_YYYYMMDD_####.ext
+      const m = (name || "").match(/^[^_]+_([0-9]{8})_[0-9]{4}(?:_.+)?\.[^.]+$/);
+      return m ? m[1] : "";
+    }
+
+    function extractLabelFromFileName(name) {
+      // projectId_YYYYMMDD_####_label.ext  → label
+      const m = (name || "").match(/^[^_]+_[0-9]{8}_[0-9]{4}_(.+)\.[^.]+$/);
       return m ? m[1] : "";
     }
 
@@ -947,6 +1049,7 @@
         })();
 
         const currentDate = extractYyyymmddFromFileName(nameRaw) || (f.appProperties?.recordingDate || "");
+        const currentLabel = extractLabelFromFileName(nameRaw);
 
         return `
           <tr data-file-id="${escapeHtml(f.id)}">
@@ -964,6 +1067,12 @@
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                   <label class="label" style="margin:0;">Recording date</label>
                   <input class="editDate" type="text" inputmode="numeric" placeholder="YYYYMMDD" value="${escapeHtml(currentDate)}" style="width:120px;" />
+                </div>
+
+                <div style="height:6px;"></div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <label class="label" style="margin:0;">Short label <span style="color:var(--danger,#c00);">*必須</span></label>
+                  <input class="editLabel" type="text" placeholder="例: gameplay" maxlength="40" value="${escapeHtml(currentLabel)}" style="min-width:180px;" />
                 </div>
 
                 <div style="height:6px;"></div>
@@ -991,7 +1100,27 @@
         `;
       }).join("");
 
+      // プロジェクト別集計
+      const summaryMap = new Map();
+      for (const f of files) {
+        const proj = f.appProperties?.projectId || "-";
+        const s = summaryMap.get(proj) || { count: 0, totalBytes: 0 };
+        s.count++; s.totalBytes += Number(f.size || 0);
+        summaryMap.set(proj, s);
+      }
+      const summaryHtml = `<div class="historySummary">
+        <span class="summaryLabel">Project summary</span>
+        ${[...summaryMap.entries()].sort((a,b) => b[1].count - a[1].count).map(([proj, s]) =>
+          `<span class="summaryItem">
+            <span class="summaryProject">${escapeHtml(proj)}</span>
+            <span class="summaryCount">${s.count} file(s)</span>
+            <span class="summarySize">${formatBytes(s.totalBytes)}</span>
+          </span>`
+        ).join("")}
+      </div>`;
+
       history.innerHTML = `
+        ${summaryHtml}
         <div class="tableWrap">
           <table>
             <thead>
@@ -1046,15 +1175,22 @@
       if (btn.classList.contains("btnSaveEdit")) {
         const startBtn = tr.querySelector(".btnStartEdit");
         const dateInput = tr.querySelector(".editDate");
+        const labelEditInput = tr.querySelector(".editLabel");
         const descInput = tr.querySelector(".editDesc");
         const typeInput = tr.querySelector(".editVideoType");
 
         const newDate = normalizeDateInputToYyyymmdd(dateInput?.value || "");
+        const newLabelRaw = (labelEditInput?.value || "").trim();
+        const newLabel = sanitizeLabel(newLabelRaw);
         const newDesc = (descInput?.value || "").trim();
         const newVideoType = (typeInput?.value || "").trim();
 
         if (!newDate) {
           if (statusEl) statusEl.textContent = "Invalid date. Use YYYYMMDD or YYYY-MM-DD.";
+          return;
+        }
+        if (!newLabel) {
+          if (statusEl) statusEl.textContent = "Short label is required.";
           return;
         }
         if (!newDesc) {
@@ -1084,7 +1220,7 @@
           return;
         }
 
-        const newName = `${projectId}_${newDate}_${pad4(seqNum)}${ext}`;
+        const newName = `${projectId}_${newDate}_${pad4(seqNum)}_${newLabel}${ext}`;
 
         try {
           btn.disabled = true;
@@ -1114,23 +1250,31 @@
         console.error("Google OAuth error:", err);
         if (silentAuthInProgress) {
           silentAuthInProgress = false;
+          showLoginScreen();
+          me.textContent = "Signed out";
           return;
         }
+        btnLogin.disabled = false;
+        btnLogin.textContent = "Sign in with Google";
         if (err?.type === "popup_failed_to_open") {
-          alert("Google sign-in popup was blocked. Allow popups for this site, then try Sign in again.");
+          loginError.textContent = "ポップアップがブロックされています。ブラウザのポップアップ許可設定を確認してください。";
           return;
         }
         if (err?.type === "popup_closed") {
-          alert("Google sign-in popup was closed before completion.");
+          loginError.textContent = "サインインがキャンセルされました。";
           return;
         }
-        alert("Google sign-in failed. Check browser popup settings and try again.");
+        loginError.textContent = "サインインに失敗しました（" + (err?.type || "unknown") + "）";
       },
       callback: async (resp) => {
         silentAuthInProgress = false;
         accessToken = resp.access_token;
         try {
           myEmail = await fetchMyEmail(accessToken);
+          hideLoginScreen();
+          loginError.textContent = "";
+          btnLogin.disabled = false;
+          btnLogin.textContent = "Sign in with Google";
           setLoggedIn(myEmail);
 
           if (recordingDateInput) recordingDateInput.disabled = false;
@@ -1150,6 +1294,7 @@
           videoTypeInput.disabled = false;
           fileInput.disabled = false;
           if (recordingDateInput) recordingDateInput.disabled = false;
+          if (fileLabelInput) fileLabelInput.disabled = false;
 
           initTemplates();
           await loadVideoTypesFromLog();
@@ -1178,15 +1323,26 @@
       rememberSignin.onchange = () => setRememberEnabled(!!rememberSignin.checked);
     }
 
-    btnLogin.onclick = () => {
+    btnLogin.addEventListener("click", () => {
       setRememberEnabled(!!rememberSignin?.checked);
-      tokenClient.requestAccessToken();
-    };
+      loginError.textContent = "";
+      btnLogin.disabled = true;
+      btnLogin.textContent = "Signing in...";
+      try {
+        tokenClient.requestAccessToken();
+      } catch (e) {
+        console.error("requestAccessToken error:", e);
+        loginError.textContent = "エラー: " + (e?.message || String(e));
+        btnLogin.disabled = false;
+        btnLogin.textContent = "Sign in with Google";
+      }
+    });
 
     btnLogout.onclick = () => {
       setRememberEnabled(false);
       if (rememberSignin) rememberSignin.checked = false;
       setLoggedOut();
+      showLoginScreen();
     };
 
     btnReloadProjects.onclick = async () => {
@@ -1206,11 +1362,17 @@
       try { await loadMyHistory(20); }
       catch (e) { console.error(e); alert("Failed to load history (see console)"); }
     };
+    projectSelect.addEventListener("change", () => {
+      try { if (projectSelect.value) localStorage.setItem(LAST_PROJECT_KEY, projectSelect.value); } catch {}
+      setUploadEnabledState();
+    });
     videoTypeSelect.onchange = () => syncVideoTypeInputFromSelect();
     videoTypeInput.oninput = () => setUploadEnabledState();
 
     // ---------- Upload click (multi) ----------
     btnUpload.onclick = async () => {
+      let emaSpeed = 0;
+      const EMA_ALPHA = 0.3;
       try {
         const files = fileInput.files;
         const fileArr = [...files];
@@ -1250,10 +1412,17 @@
         etaText.textContent = "ETA: -";
 
         const results = [];
+        const uploadedFileIds = [];
         const dateStr = getSelectedRecordingYyyymmdd();
         const selectedVideoType = (videoTypeInput.value || "").trim();
         if (!selectedVideoType) {
           alert("Video type is required.");
+          return;
+        }
+        const shortLabelRaw = (fileLabelInput?.value || "").trim();
+        const shortLabel = sanitizeLabel(shortLabelRaw);
+        if (!shortLabel) {
+          alert("Short label is required.");
           return;
         }
 
@@ -1263,7 +1432,7 @@
           const seq = await getNextSeqSmallestAvailable(p.projectId);
 
           const ext = getFileExt(file.name);
-          const finalName = `${p.projectId}_${dateStr}_${pad4(seq)}${ext}`;
+          const finalName = `${p.projectId}_${dateStr}_${pad4(seq)}_${shortLabel}${ext}`;
 
           currentFileText.textContent = `Current: ${i + 1}/${fileArr.length}  ${file.name}`;
           finalNameText.textContent = `Final name: ${finalName}`;
@@ -1292,11 +1461,13 @@
             const overall = Math.floor(((doneBytesBefore + st.fileOffset) / totalBytes) * 100);
             setProgress(overall);
 
-            speedText.textContent = `Speed: ${formatSpeed(st.speedBps)}`;
+            if (st.speedBps > 0) {
+            emaSpeed = emaSpeed === 0 ? st.speedBps : EMA_ALPHA * st.speedBps + (1 - EMA_ALPHA) * emaSpeed;
+          }
+            speedText.textContent = `Speed: ${formatSpeed(emaSpeed)}`;
 
             const remainingOverall = totalBytes - (doneBytesBefore + st.fileOffset);
-            const etaOverall = st.speedBps > 0 ? (remainingOverall / st.speedBps) : Infinity;
-            etaText.textContent = `ETA: ${formatETA(etaOverall)}`;
+            etaText.textContent = `ETA: ${formatETA(emaSpeed > 0 ? remainingOverall / emaSpeed : Infinity)}`;
           });
 
           const fileId = uploaded.id;
@@ -1319,6 +1490,7 @@
           ]);
 
           results.push({ finalName, driveLink });
+          uploadedFileIds.push(fileId);
           doneBytesBefore += file.size;
         }
 
@@ -1342,6 +1514,25 @@
         await loadProjects();
         await loadMyHistory(20);
 
+        // アップロードした行をハイライト＆スクロール
+        if (uploadedFileIds.length > 0) {
+          const tableWrap = history.querySelector(".tableWrap");
+          let firstHit = null;
+          for (const id of uploadedFileIds) {
+            const tr = history.querySelector(`tr[data-file-id="${id}"]`);
+            if (tr) {
+              tr.classList.add("rowHighlight");
+              tr.addEventListener("animationend", () => tr.classList.remove("rowHighlight"), { once: true });
+              if (!firstHit) firstHit = tr;
+            }
+          }
+          if (tableWrap) {
+            tableWrap.scrollTop = firstHit
+              ? Math.max(0, firstHit.offsetTop - tableWrap.offsetTop - 20)
+              : 0;
+          }
+        }
+
       } catch (e) {
         console.error(e);
         alert("Upload failed (see console)");
@@ -1353,9 +1544,18 @@
     // init
     setLoggedOut();
     if (getRememberEnabled()) {
+      // Remember 有効 → サイレント認証を試みる（成功すればログイン画面を表示しない）
+      hideLoginScreen();
+      me.textContent = "Signing in...";
       silentAuthInProgress = true;
       try { tokenClient.requestAccessToken({ prompt: "" }); }
-      catch { silentAuthInProgress = false; }
+      catch {
+        silentAuthInProgress = false;
+        showLoginScreen();
+        me.textContent = "Signed out";
+      }
+    } else {
+      showLoginScreen();
     }
   </script>
 </body>
