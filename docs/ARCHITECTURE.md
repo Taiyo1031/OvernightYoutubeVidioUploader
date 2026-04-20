@@ -355,10 +355,11 @@ Primary helpers:
 
 - delegated click handler on `history`
 - `updateDriveFileMeta()`
-- `updateLogRowFileNameDescAndVideoType()`
+- `updateLogRowAfterInlineEdit()`
 
 Editable fields:
 
+- project
 - recording date
 - short label
 - video type
@@ -368,9 +369,15 @@ What gets updated:
 
 - Drive file:
   - `name`
+  - parent folder when project changes
+  - `appProperties.projectId`
+  - `appProperties.projectNo`
+  - `appProperties.seq`
   - `appProperties.recordingDate`
   - `appProperties.videoType`
 - Sheets `Log` row:
+  - column `B` (`projectId`)
+  - column `D` (`seq`)
   - column `E` (`fileName`)
   - column `G` (`description`)
   - column `L` (`videoType`)
@@ -378,10 +385,15 @@ What gets updated:
 What does not get updated during inline edit:
 
 - Drive file description text
-- sequence number
 - file size
 
 This means the user-visible description in history comes from Sheets and can diverge from the Drive file description after edits.
+
+When the project is changed during inline edit:
+
+- the file is moved to the target project's Drive folder
+- a new sequence is allocated for the destination project
+- the filename is regenerated with the destination `projectId` and new sequence
 
 ## Admin page behavior (`admin.html` + `js/pages/admin-page.js`)
 
@@ -545,7 +557,7 @@ If you need to change behavior, start with these functions:
 | Project dropdown | `loadProjects` in `js/pages/index-page.js` |
 | Video type loading | `loadVideoTypesFromLog` in `js/pages/index-page.js` |
 | Upload execution | `handleUpload`, `startResumableUpload`, `uploadInChunks`, `appendLogRow` across `js/pages/index-page.js` and `js/services/drive.js` |
-| History edit | delegated `history` click handler, `updateDriveFileMeta`, `updateLogRowFileNameDescAndVideoType` in `js/pages/index-page.js` |
+| History edit | delegated `history` click handler, `updateDriveFileMeta`, `updateLogRowAfterInlineEdit` in `js/pages/index-page.js` |
 | Admin sign-in gate | `tokenClient.callback`, `showBlocked`, `showAdmin` in `js/pages/admin-page.js` |
 | Granting access | `grantUserAccessToUploader`, `loadAccessList` in `js/pages/admin-page.js` |
 | Project creation | `addProject` in `js/pages/admin-page.js` |

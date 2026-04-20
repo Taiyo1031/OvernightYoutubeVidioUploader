@@ -13,6 +13,15 @@ async function ensureOk(res) {
 }
 
 export function createDriveClient({ getAccessToken }) {
+  async function getFile(fileId, fields = "id,name,parents,appProperties") {
+    const params = new URLSearchParams({ fields });
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?${params.toString()}`, {
+      headers: getAuthHeaders(getAccessToken),
+    });
+    await ensureOk(res);
+    return res.json();
+  }
+
   async function searchFiles({ q, pageSize, orderBy, fields }) {
     const params = new URLSearchParams({
       q,
@@ -113,8 +122,14 @@ export function createDriveClient({ getAccessToken }) {
     throw new Error("Upload did not complete");
   }
 
-  async function patchFileMeta(fileId, body, fields = "id,name,appProperties") {
-    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}`;
+  async function patchFileMeta(fileId, body, options = {}) {
+    const params = new URLSearchParams();
+    if (options.fields) params.set("fields", options.fields);
+    if (options.addParents) params.set("addParents", options.addParents);
+    if (options.removeParents) params.set("removeParents", options.removeParents);
+
+    const query = params.toString();
+    const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}${query ? `?${query}` : ""}`;
     const res = await fetch(url, {
       method: "PATCH",
       headers: getAuthHeaders(getAccessToken, {
@@ -190,6 +205,7 @@ export function createDriveClient({ getAccessToken }) {
   }
 
   return {
+    getFile,
     searchFiles,
     startResumableUpload,
     uploadInChunks,

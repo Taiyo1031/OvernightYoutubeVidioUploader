@@ -11,6 +11,7 @@ export function initIndexPage() {
   let myEmail = "";
   let lastLogMap = new Map();
   let availableVideoTypes = [];
+  let availableProjects = [];
   let silentAuthInProgress = false;
 
   const els = {
@@ -120,7 +121,10 @@ export function initIndexPage() {
     els.videoTypeSelect.innerHTML = "";
     els.videoTypeInput.value = DEFAULT_VIDEO_TYPE;
     els.videoTypeInfo.textContent = "Loading types from Log...";
+    els.projectSelect.innerHTML = "";
+    els.historyProjectFilter.innerHTML = '<option value="">All projects</option>';
     availableVideoTypes = [];
+    availableProjects = [];
 
     if (els.adminLink) els.adminLink.style.display = "none";
   }
@@ -148,6 +152,33 @@ export function initIndexPage() {
       projectNo: option.dataset.projectNo,
       folderId: option.dataset.folderId,
     };
+  }
+
+  function getProjectMetaById(projectId) {
+    return availableProjects.find((project) => project.projectId === projectId) || null;
+  }
+
+  function formatProjectOptionLabel(project) {
+    const numberPrefix = project.projectNo ? `${String(project.projectNo).padStart(3, "0")} - ` : "";
+    const name = project.projectName || project.projectId;
+    return `${numberPrefix}${name}`;
+  }
+
+  function buildProjectEditOptions(currentProjectId) {
+    const options = [...availableProjects];
+    if (currentProjectId && !options.some((project) => project.projectId === currentProjectId)) {
+      options.unshift({
+        projectId: currentProjectId,
+        projectNo: "",
+        projectName: `${currentProjectId} (current / inactive)`,
+        folderId: "",
+      });
+    }
+
+    return options.map((project) => {
+      const selected = project.projectId === currentProjectId ? " selected" : "";
+      return `<option value="${escapeHtml(project.projectId)}"${selected}>${escapeHtml(formatProjectOptionLabel(project))}</option>`;
+    }).join("");
   }
 
   function resetUploadFormUI() {
@@ -304,6 +335,7 @@ export function initIndexPage() {
       .filter((project) => project.projectId && project.projectName && project.folderId && project.isActive)
       .sort((a, b) => Number(a.projectNo) - Number(b.projectNo));
 
+    availableProjects = active;
     els.projectSelect.innerHTML = "";
 
     if (active.length === 0) {
@@ -391,22 +423,53 @@ export function initIndexPage() {
     return map;
   }
 
-  async function updateDriveFileMeta(fileId, newName, newRecordingDate, newVideoType) {
-    return drive.patchFileMeta(fileId, {
-      name: newName,
-      appProperties: {
-        recordingDate: String(newRecordingDate || ""),
-        videoType: String(newVideoType || ""),
+  async function updateDriveFileMeta({
+    fileId,
+    newName,
+    newRecordingDate,
+    newVideoType,
+    projectId = null,
+    projectNo = null,
+    seq = null,
+    moveToFolderId = "",
+  }) {
+    let removeParents = "";
+    if (moveToFolderId) {
+      const currentFile = await drive.getFile(fileId, "id,parents");
+      const currentParents = currentFile.parents || [];
+      removeParents = currentParents.join(",");
+    }
+
+    const appProperties = {
+      recordingDate: String(newRecordingDate || ""),
+      videoType: String(newVideoType || ""),
+    };
+    if (projectId !== null) appProperties.projectId = String(projectId || "");
+    if (projectNo !== null) appProperties.projectNo = String(projectNo || "");
+    if (seq !== null) appProperties.seq = String(seq || "");
+
+    return drive.patchFileMeta(
+      fileId,
+      {
+        name: newName,
+        appProperties,
       },
-    });
+      {
+        fields: "id,name,parents,appProperties",
+        addParents: moveToFolderId || "",
+        removeParents,
+      }
+    );
   }
 
-  async function updateLogRowFileNameDescAndVideoType(rowNum, newFileName, newDesc, newVideoType) {
-    const currentSizeData = await sheets.getValues(`${CONFIG.LOG_SHEET}!F${rowNum}:F${rowNum}`);
-    const sizeBytes = currentSizeData.values?.[0]?.[0] ?? "";
-
-    await sheets.putValues(`${CONFIG.LOG_SHEET}!E${rowNum}:G${rowNum}`, [[newFileName, String(sizeBytes), newDesc]]);
-    await sheets.putValues(`${CONFIG.LOG_SHEET}!L${rowNum}:L${rowNum}`, [[String(newVideoType || "")]]);
+  async function updateLogRowAfterInlineEdit(rowNum, { projectId, seq, fileName, description, videoType }) {
+    await Promise.all([
+      sheets.putValues(`${CONFIG.LOG_SHEET}!B${rowNum}`, [[String(projectId || "")]]),
+      sheets.putValues(`${CONFIG.LOG_SHEET}!D${rowNum}`, [[String(seq || "")]]),
+      sheets.putValues(`${CONFIG.LOG_SHEET}!E${rowNum}`, [[String(fileName || "")]]),
+      sheets.putValues(`${CONFIG.LOG_SHEET}!G${rowNum}`, [[String(description || "")]]),
+      sheets.putValues(`${CONFIG.LOG_SHEET}!L${rowNum}`, [[String(videoType || "")]]),
+    ]);
   }
 
   async function loadMyHistory(limit = 20) {
@@ -463,6 +526,7 @@ export function initIndexPage() {
 
       const currentDate = extractYyyymmddFromFileName(fileNameRaw) || (file.appProperties?.recordingDate || "");
       const currentLabel = extractLabelFromFileName(fileNameRaw);
+      const editProjectOptions = buildProjectEditOptions(projectId);
 
       return `
         <tr data-file-id="${escapeHtml(file.id)}">
@@ -475,6 +539,11 @@ export function initIndexPage() {
           <td class="desc">
             <div class="descView">${descText}</div>
             <div class="descEdit" style="display:none; margin-top:8px;">
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <label class="label" style="margin:0;">Project</label>
+                <select class="editProject" style="min-width:260px;">${editProjectOptions}</select>
+              </div>
+              <div style="height:6px;"></div>
               <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                 <label class="label" style="margin:0;">Recording date</label>
                 <input class="editDate" type="text" inputmode="numeric" placeholder="YYYYMMDD" value="${escapeHtml(currentDate)}" style="width:120px;" />
@@ -630,16 +699,22 @@ export function initIndexPage() {
       if (!button.classList.contains("btnSaveEdit")) return;
 
       const startButton = row.querySelector(".btnStartEdit");
+      const projectInput = row.querySelector(".editProject");
       const dateInput = row.querySelector(".editDate");
       const labelInput = row.querySelector(".editLabel");
       const descInput = row.querySelector(".editDesc");
       const typeInput = row.querySelector(".editVideoType");
 
+      const newProjectId = (projectInput?.value || "").trim();
       const newDate = normalizeDateInputToYyyymmdd(dateInput?.value || "");
       const newLabel = sanitizeLabel(labelInput?.value || "");
       const newDesc = (descInput?.value || "").trim();
       const newVideoType = (typeInput?.value || "").trim();
 
+      if (!newProjectId) {
+        if (statusEl) statusEl.textContent = "Project is required.";
+        return;
+      }
       if (!newDate) {
         if (statusEl) statusEl.textContent = "Invalid date. Use YYYYMMDD or YYYY-MM-DD.";
         return;
@@ -666,18 +741,26 @@ export function initIndexPage() {
       const link = row.querySelector("td:nth-child(4) a");
       const currentName = link?.textContent || "";
       const ext = extractExtFromFileName(currentName);
-      const projectId = row.querySelector("td:nth-child(2)")?.textContent || "";
-      const seq = Number(row.querySelector("td:nth-child(3)")?.textContent || "");
+      const currentProjectId = row.querySelector("td:nth-child(2)")?.textContent || "";
+      const currentSeq = Number(row.querySelector("td:nth-child(3)")?.textContent || "");
 
-      if (!projectId || !Number.isFinite(seq)) {
+      if (!currentProjectId || !Number.isFinite(currentSeq)) {
         if (statusEl) statusEl.textContent = "Cannot parse projectId/seq from row.";
         return;
       }
 
+      const projectChanged = newProjectId !== currentProjectId;
+      const targetProject = projectChanged ? getProjectMetaById(newProjectId) : getProjectMetaById(currentProjectId);
+      if (projectChanged && (!targetProject || !targetProject.folderId)) {
+        if (statusEl) statusEl.textContent = "Target project is not available.";
+        return;
+      }
+
+      const newSeq = projectChanged ? await getNextSeqSmallestAvailable(newProjectId) : currentSeq;
       const newName = buildUploadFileName({
-        projectId,
+        projectId: newProjectId,
         recordingDate: newDate,
-        seq,
+        seq: newSeq,
         label: newLabel,
         ext,
       });
@@ -687,8 +770,23 @@ export function initIndexPage() {
         if (startButton) startButton.disabled = true;
         if (statusEl) statusEl.textContent = "Saving...";
 
-        await updateDriveFileMeta(fileId, newName, newDate, newVideoType);
-        await updateLogRowFileNameDescAndVideoType(rowInfo.rowNum, newName, newDesc, newVideoType);
+        await updateDriveFileMeta({
+          fileId,
+          newName,
+          newRecordingDate: newDate,
+          newVideoType,
+          projectId: projectChanged ? newProjectId : null,
+          projectNo: projectChanged ? targetProject.projectNo : null,
+          seq: projectChanged ? newSeq : null,
+          moveToFolderId: projectChanged ? targetProject.folderId : "",
+        });
+        await updateLogRowAfterInlineEdit(rowInfo.rowNum, {
+          projectId: newProjectId,
+          seq: newSeq,
+          fileName: newName,
+          description: newDesc,
+          videoType: newVideoType,
+        });
 
         if (statusEl) statusEl.textContent = "Saved.";
         await loadVideoTypesFromLog(newVideoType);
