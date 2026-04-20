@@ -29,7 +29,7 @@
     </div>
   </div>
 
-  <div class="container">
+  <div class="container containerWide">
     <div class="header">
       <div class="brand">
         <h1>Devlog Uploader</h1>
@@ -43,9 +43,9 @@
       </div>
     </div>
 
-    <div class="grid">
+    <div class="grid gridWide gridHistoryPriority">
       <!-- LEFT: Upload -->
-      <div class="card">
+      <div class="card uploadCard">
         <h2>Upload</h2>
 
         <!-- ── Section 1: ファイル名に関わる設定 ── -->
@@ -123,10 +123,11 @@
           </div>
           <div class="small">複数選択可。アップロードは選択順に順次実行されます。</div>
           <div class="small mono" id="selectedSizeText">Selected: 0 file(s), total -</div>
+          <div class="small mono" id="autoUploadHint">Files are queued automatically once required fields are ready.</div>
         </div>
 
         <div class="row" style="margin-top:14px;">
-          <button class="btnPrimary" id="btnUpload" disabled>Upload</button>
+          <button class="btnPrimary" id="btnUpload" disabled>Add to queue</button>
           <span class="mono" id="finalNameText"></span>
         </div>
 
@@ -142,13 +143,28 @@
           <div class="mono" id="currentFileText"></div>
         </div>
 
+        <div class="queuePanel">
+          <div class="row queuePanelHeader">
+            <div style="flex:1; min-width:220px;">
+              <div class="sectionTitle">Upload queue</div>
+              <div class="small mono" id="queueSummary">Queue idle.</div>
+            </div>
+            <div>
+              <button class="btnGhost" id="btnClearQueueDone" type="button" disabled>Clear finished</button>
+            </div>
+          </div>
+          <div id="uploadQueue" class="queueList">
+            <div class="queueEmpty">No queued uploads.</div>
+          </div>
+        </div>
+
         <div class="footerNote">
           Filename format: <span class="mono">projectId_YYYYMMDD_####_label.ext</span>
         </div>
       </div>
 
       <!-- RIGHT: History -->
-      <div class="card">
+      <div class="card historyCard">
         <h2>My upload history</h2>
         <p class="hint">This list is built from Drive search (appProperties) and enriched with descriptions from Sheets (Log).</p>
 

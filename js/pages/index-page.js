@@ -12,7 +12,12 @@ export function initIndexPage() {
   let lastLogMap = new Map();
   let availableVideoTypes = [];
   let availableProjects = [];
+  let uploadQueue = [];
   let silentAuthInProgress = false;
+  let uploadInProgress = false;
+  let queueRunnerActive = false;
+  let pendingAutoQueue = false;
+  let nextQueueItemId = 1;
 
   const els = {
     me: document.getElementById("me"),
@@ -33,6 +38,7 @@ export function initIndexPage() {
     videoTypeInfo: document.getElementById("videoTypeInfo"),
     fileInput: document.getElementById("file"),
     selectedSizeText: document.getElementById("selectedSizeText"),
+    autoUploadHint: document.getElementById("autoUploadHint"),
     btnUpload: document.getElementById("btnUpload"),
     recordingDateInput: document.getElementById("recordingDate"),
     fileLabelInput: document.getElementById("fileLabel"),
@@ -44,6 +50,9 @@ export function initIndexPage() {
     etaText: document.getElementById("etaText"),
     currentFileText: document.getElementById("currentFileText"),
     finalNameText: document.getElementById("finalNameText"),
+    queueSummary: document.getElementById("queueSummary"),
+    uploadQueue: document.getElementById("uploadQueue"),
+    btnClearQueueDone: document.getElementById("btnClearQueueDone"),
     history: document.getElementById("history"),
     historyProjectFilter: document.getElementById("historyProjectFilter"),
     btnReloadHistory: document.getElementById("btnReloadHistory"),
@@ -125,6 +134,13 @@ export function initIndexPage() {
     els.historyProjectFilter.innerHTML = '<option value="">All projects</option>';
     availableVideoTypes = [];
     availableProjects = [];
+    uploadQueue = [];
+    uploadInProgress = false;
+    queueRunnerActive = false;
+    pendingAutoQueue = false;
+    nextQueueItemId = 1;
+    resetAutoQueueHint();
+    renderUploadQueue();
 
     if (els.adminLink) els.adminLink.style.display = "none";
   }
@@ -139,11 +155,6 @@ export function initIndexPage() {
     els.recordingDateInput.value = ymdTokyo(new Date());
   }
 
-  function getSelectedRecordingYyyymmdd() {
-    const normalized = normalizeDateInputToYyyymmdd(els.recordingDateInput.value || "");
-    return normalized || yyyymmddTokyo();
-  }
-
   function getSelectedProjectMeta() {
     const option = els.projectSelect.selectedOptions[0];
     if (!option || !option.value) throw new Error("No project selected");
@@ -151,6 +162,7 @@ export function initIndexPage() {
       projectId: option.value,
       projectNo: option.dataset.projectNo,
       folderId: option.dataset.folderId,
+      projectLabel: option.textContent || option.value,
     };
   }
 
@@ -162,6 +174,98 @@ export function initIndexPage() {
     const numberPrefix = project.projectNo ? `${String(project.projectNo).padStart(3, "0")} - ` : "";
     const name = project.projectName || project.projectId;
     return `${numberPrefix}${name}`;
+  }
+
+  function resetAutoQueueHint() {
+    if (!els.autoUploadHint) return;
+    els.autoUploadHint.textContent = "Files are queued automatically once required fields are ready.";
+  }
+
+  function setAutoQueueHint(message = "") {
+    if (!els.autoUploadHint) return;
+    els.autoUploadHint.textContent = message || "Files are queued automatically once required fields are ready.";
+  }
+
+  function getSelectedFiles() {
+    return [...(els.fileInput.files || [])];
+  }
+
+  function hasQueueWork() {
+    return uploadQueue.some((job) => job.status === "queued" || job.status === "uploading");
+  }
+
+  function getFinishedQueueCount() {
+    return uploadQueue.filter((job) => job.status === "completed" || job.status === "failed").length;
+  }
+
+  function getQueueJobById(queueId) {
+    return uploadQueue.find((job) => job.id === queueId) || null;
+  }
+
+  function getQueueStatusLabel(status) {
+    if (status === "uploading") return "Uploading";
+    if (status === "completed") return "Completed";
+    if (status === "failed") return "Failed";
+    return "Queued";
+  }
+
+  function buildUploadDraft({ interactive = false } = {}) {
+    const fail = (message) => {
+      if (interactive) alert(message);
+      return { ok: false, message };
+    };
+
+    if (!accessToken) return fail("Sign in is required.");
+
+    const fileList = getSelectedFiles();
+    if (fileList.length === 0) return fail("Please select video files");
+
+    let project;
+    try {
+      project = getSelectedProjectMeta();
+    } catch {
+      return fail("Project is required.");
+    }
+
+    const rawRecordingDate = (els.recordingDateInput.value || "").trim();
+    const normalizedRecordingDate = normalizeDateInputToYyyymmdd(rawRecordingDate);
+    if (rawRecordingDate && !normalizedRecordingDate) {
+      return fail("Recording date is invalid. Use YYYY-MM-DD.");
+    }
+
+    const selectedVideoType = (els.videoTypeInput.value || "").trim();
+    if (!selectedVideoType) return fail("Video type is required.");
+
+    const shortLabel = sanitizeLabel((els.fileLabelInput.value || "").trim());
+    if (!shortLabel) return fail("Short label is required.");
+
+    const isPerFile = els.descModePerFile.checked;
+    const commonText = (els.desc.value || "").trim();
+    const perDescMap = isPerFile ? getPerFileDescriptions() : new Map();
+
+    if (!isPerFile && !commonText) {
+      return fail("Description is required.");
+    }
+
+    if (isPerFile) {
+      for (let index = 0; index < fileList.length; index += 1) {
+        if (!(perDescMap.get(index) || "").trim()) {
+          return fail(`Description is required for file #${index + 1}.`);
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      fileList,
+      project,
+      isPerFile,
+      commonText,
+      perDescMap,
+      recordingDate: normalizedRecordingDate || yyyymmddTokyo(),
+      selectedVideoType,
+      shortLabel,
+    };
   }
 
   function buildProjectEditOptions(currentProjectId) {
@@ -181,29 +285,137 @@ export function initIndexPage() {
     }).join("");
   }
 
-  function resetUploadFormUI() {
+  function clearSelectedFilesInput() {
     els.fileInput.value = "";
     els.fileInput.type = "text";
     els.fileInput.type = "file";
     els.fileInput.accept = "video/*";
     els.fileInput.multiple = true;
+  }
 
+  function clearDraftSelectionUI() {
+    clearSelectedFilesInput();
     els.perFileList.innerHTML = "";
-    els.perFileDescWrap.style.display = "none";
-    els.commonDescWrap.style.display = "block";
-    els.descModeCommon.checked = true;
-    els.desc.value = "";
-    els.recordingDateInput.value = "";
     els.fileLabelInput.value = "";
     els.selectedSizeText.textContent = "Selected: 0 file(s), total -";
+    pendingAutoQueue = false;
+    updateDescModeUI();
+    resetAutoQueueHint();
+  }
+
+  function clearCurrentUploadStatusUI() {
+    els.progressWrap.style.display = "none";
+    els.progressBar.value = 0;
+    els.progressText.textContent = "0%";
+    els.statusLine.textContent = "";
+    els.speedText.textContent = "Speed: -";
+    els.etaText.textContent = "ETA: -";
     els.currentFileText.textContent = "";
     els.finalNameText.textContent = "";
   }
 
+  function createQueueJobFromDraft(draft) {
+    const fileEntries = draft.fileList.map((file, index) => ({
+      file,
+      description: draft.isPerFile ? String(draft.perDescMap.get(index) || "") : String(draft.commonText || ""),
+    }));
+
+    return {
+      id: `queue-${Date.now()}-${nextQueueItemId++}`,
+      status: "queued",
+      createdAt: new Date().toISOString(),
+      projectId: draft.project.projectId,
+      projectLabel: draft.project.projectLabel || draft.project.projectId,
+      projectNo: draft.project.projectNo || "",
+      folderId: draft.project.folderId,
+      recordingDate: draft.recordingDate,
+      shortLabel: draft.shortLabel,
+      selectedVideoType: draft.selectedVideoType,
+      templateId: els.templateSelect.value || "none",
+      fileEntries,
+      fileCount: fileEntries.length,
+      totalBytes: fileEntries.reduce((sum, entry) => sum + Number(entry.file.size || 0), 0),
+      progressPercent: 0,
+      currentFileIndex: 0,
+      currentFileName: "",
+      speedText: "Speed: -",
+      etaText: "ETA: -",
+      uploadedFileIds: [],
+      results: [],
+      errorMessage: "",
+    };
+  }
+
+  function renderUploadQueue() {
+    const uploadingCount = uploadQueue.filter((job) => job.status === "uploading").length;
+    const queuedCount = uploadQueue.filter((job) => job.status === "queued").length;
+    const completedCount = uploadQueue.filter((job) => job.status === "completed").length;
+    const failedCount = uploadQueue.filter((job) => job.status === "failed").length;
+
+    if (els.queueSummary) {
+      const parts = [];
+      if (uploadingCount > 0) parts.push(`${uploadingCount} uploading`);
+      if (queuedCount > 0) parts.push(`${queuedCount} waiting`);
+      if (failedCount > 0) parts.push(`${failedCount} failed`);
+      if (completedCount > 0) parts.push(`${completedCount} done`);
+      els.queueSummary.textContent = parts.length > 0 ? parts.join(" / ") : "Queue idle.";
+    }
+
+    if (els.btnClearQueueDone) {
+      els.btnClearQueueDone.disabled = getFinishedQueueCount() === 0;
+    }
+
+    if (!els.uploadQueue) return;
+
+    if (uploadQueue.length === 0) {
+      els.uploadQueue.innerHTML = '<div class="queueEmpty">No queued uploads.</div>';
+      return;
+    }
+
+    els.uploadQueue.innerHTML = uploadQueue.map((job) => {
+      const itemClass = `queueItem queueItem${job.status.charAt(0).toUpperCase()}${job.status.slice(1)}`;
+      const badgeClass = `queueBadge queueBadge${job.status.charAt(0).toUpperCase()}${job.status.slice(1)}`;
+      const fileNames = job.fileEntries.map((entry) => entry.file.name);
+      const filePreview = fileNames.length <= 2
+        ? fileNames.join(", ")
+        : `${fileNames.slice(0, 2).join(", ")} +${fileNames.length - 2} more`;
+      const detailText = job.status === "failed"
+        ? `Error: ${job.errorMessage || "Upload failed."}${job.uploadedFileIds.length > 0 ? " Partial uploads may already exist." : ""}`
+        : job.status === "completed"
+          ? `Completed ${job.fileCount} file(s).`
+          : job.status === "uploading"
+            ? `Current: ${job.currentFileIndex}/${job.fileCount} ${job.currentFileName || ""}`.trim()
+            : `Waiting: ${job.fileCount} file(s)`;
+      const progressValue = job.status === "completed" ? 100 : Math.max(0, Math.min(100, Number(job.progressPercent || 0)));
+      const actionHtml = job.status === "queued"
+        ? `<button class="btnGhost" type="button" data-queue-action="remove" data-queue-id="${escapeHtml(job.id)}">Remove</button>`
+        : job.status === "failed"
+          ? `<button class="btnGhost" type="button" data-queue-action="remove" data-queue-id="${escapeHtml(job.id)}">Dismiss</button>`
+          : job.status === "completed"
+            ? `<button class="btnGhost" type="button" data-queue-action="remove" data-queue-id="${escapeHtml(job.id)}">Dismiss</button>`
+            : "";
+
+      return `
+        <div class="${itemClass}" data-queue-id="${escapeHtml(job.id)}">
+          <div class="queueItemTop">
+            <div class="queueTitle">${escapeHtml(job.projectLabel)} / ${escapeHtml(job.shortLabel)} / ${job.fileCount} file(s)</div>
+            <span class="${badgeClass}">${escapeHtml(getQueueStatusLabel(job.status))}</span>
+          </div>
+          <div class="queueMeta">${escapeHtml(toTokyo(job.createdAt))} | ${escapeHtml(job.recordingDate)} | ${escapeHtml(job.selectedVideoType)} | ${escapeHtml(formatBytes(job.totalBytes))}</div>
+          <div class="queueMeta">${escapeHtml(filePreview)}</div>
+          <div class="queueDetail">${escapeHtml(detailText)}</div>
+          <div class="queueProgress"><div class="queueProgressBar" style="width:${progressValue}%;"></div></div>
+          ${actionHtml ? `<div class="queueActions">${actionHtml}</div>` : ""}
+        </div>
+      `;
+    }).join("");
+  }
+
   function setUploadEnabledState() {
-    const hasProject = !!els.projectSelect.value;
-    const hasVideoTypeText = !!(els.videoTypeInput.value || "").trim();
-    els.btnUpload.disabled = !(hasProject && hasVideoTypeText && accessToken);
+    const draft = buildUploadDraft({ interactive: false });
+    els.fileInput.disabled = !accessToken;
+    els.btnUpload.disabled = !draft.ok;
+    els.btnLogout.disabled = !accessToken || hasQueueWork();
   }
 
   function syncVideoTypeInputFromSelect() {
@@ -275,6 +487,8 @@ export function initIndexPage() {
     els.templateSelect.onchange = () => {
       const selected = CONFIG.TEMPLATES.find((template) => template.id === els.templateSelect.value);
       if (selected && selected.body) els.desc.value = selected.body;
+      setUploadEnabledState();
+      attemptAutoQueue();
     };
   }
 
@@ -282,6 +496,7 @@ export function initIndexPage() {
     const perFile = els.descModePerFile.checked;
     els.commonDescWrap.style.display = perFile ? "none" : "block";
     els.perFileDescWrap.style.display = perFile ? "block" : "none";
+    setUploadEnabledState();
   }
 
   function buildPerFileEditors(files) {
@@ -317,6 +532,72 @@ export function initIndexPage() {
     const list = files ? [...files] : [];
     const total = list.reduce((sum, file) => sum + Number(file.size || 0), 0);
     els.selectedSizeText.textContent = `Selected: ${list.length} file(s), total ${total > 0 ? formatBytes(total) : "-"}`;
+  }
+
+  function syncSelectedFilesUI(files) {
+    const list = files ? [...files] : [];
+
+    if (list.length === 0) {
+      pendingAutoQueue = false;
+      els.perFileList.innerHTML = "";
+      updateSelectedSize([]);
+      resetAutoQueueHint();
+      setUploadEnabledState();
+      return;
+    }
+
+    buildPerFileEditors(list);
+    updateSelectedSize(list);
+
+    if (!(els.recordingDateInput.value || "").trim()) {
+      setRecordingDateTodayDefault();
+    }
+
+    pendingAutoQueue = true;
+    attemptAutoQueue();
+  }
+
+  function enqueueUploadDraft({ draft = null, interactive = true } = {}) {
+    const uploadDraft = draft || buildUploadDraft({ interactive });
+    if (!uploadDraft.ok) {
+      setUploadEnabledState();
+      return null;
+    }
+
+    const job = createQueueJobFromDraft(uploadDraft);
+    uploadQueue.push(job);
+    clearDraftSelectionUI();
+    renderUploadQueue();
+    setUploadEnabledState();
+
+    const queueMessage = uploadInProgress || queueRunnerActive
+      ? `Queued ${job.fileCount} file(s) for ${job.projectId}.`
+      : `Queued ${job.fileCount} file(s). Upload starting...`;
+    setAutoQueueHint(queueMessage);
+    void processUploadQueue();
+    return job;
+  }
+
+  function attemptAutoQueue() {
+    if (!pendingAutoQueue) {
+      setUploadEnabledState();
+      return;
+    }
+
+    const draft = buildUploadDraft({ interactive: false });
+    setUploadEnabledState();
+
+    if (draft.ok) {
+      pendingAutoQueue = false;
+      enqueueUploadDraft({ draft, interactive: false });
+      return;
+    }
+
+    if (getSelectedFiles().length > 0) {
+      setAutoQueueHint(`Auto queue waiting: ${draft.message}`);
+    } else {
+      resetAutoQueueHint();
+    }
   }
 
   async function loadProjects() {
@@ -645,20 +926,12 @@ export function initIndexPage() {
       const dataTransfer = new DataTransfer();
       videoFiles.forEach((file) => dataTransfer.items.add(file));
       els.fileInput.files = dataTransfer.files;
-      buildPerFileEditors(els.fileInput.files);
-      updateSelectedSize(els.fileInput.files);
-      els.recordingDateInput.value = ymdTokyo(new Date());
+      syncSelectedFilesUI(els.fileInput.files);
     });
 
     els.fileInput.onchange = () => {
       const files = els.fileInput.files;
-      if (!files || files.length === 0) {
-        updateSelectedSize([]);
-        return;
-      }
-      buildPerFileEditors(files);
-      updateSelectedSize(files);
-      els.recordingDateInput.value = ymdTokyo(new Date());
+      syncSelectedFilesUI(files);
     };
   }
 
@@ -800,180 +1073,252 @@ export function initIndexPage() {
     });
   }
 
-  async function handleUpload() {
+  async function highlightHistoryRows(uploadedFileIds) {
+    if (uploadedFileIds.length === 0) return;
+
+    const tableWrap = els.history.querySelector(".tableWrap");
+    let firstMatch = null;
+    for (const id of uploadedFileIds) {
+      const row = els.history.querySelector(`tr[data-file-id="${id}"]`);
+      if (!row) continue;
+      row.classList.add("rowHighlight");
+      row.addEventListener("animationend", () => row.classList.remove("rowHighlight"), { once: true });
+      if (!firstMatch) firstMatch = row;
+    }
+
+    if (tableWrap) {
+      tableWrap.scrollTop = firstMatch
+        ? Math.max(0, firstMatch.offsetTop - tableWrap.offsetTop - 20)
+        : 0;
+    }
+  }
+
+  async function refreshHistoryAfterQueueJob(uploadedFileIds) {
+    if (uploadedFileIds.length === 0) return;
+    try {
+      await loadMyHistory(20);
+      await highlightHistoryRows(uploadedFileIds);
+    } catch (error) {
+      console.error("History refresh after queued upload failed:", error);
+    }
+  }
+
+  async function processQueueJob(job) {
     let emaSpeed = 0;
     const EMA_ALPHA = 0.3;
+    const totalBytes = job.fileEntries.reduce((sum, entry) => sum + Number(entry.file.size || 0), 0);
+    const progressBaseBytes = totalBytes > 0 ? totalBytes : 1;
+    let doneBytesBefore = 0;
+
+    uploadInProgress = true;
+    job.status = "uploading";
+    job.errorMessage = "";
+    job.progressPercent = 0;
+    job.currentFileIndex = 0;
+    job.currentFileName = "";
+    job.speedText = "Speed: -";
+    job.etaText = "ETA: -";
+    renderUploadQueue();
+    setUploadEnabledState();
 
     try {
-      const files = els.fileInput.files;
-      const fileList = [...files];
-      if (!files || fileList.length === 0) {
-        alert("Please select video files");
-        return;
-      }
-
-      const project = getSelectedProjectMeta();
-      const isPerFile = els.descModePerFile.checked;
-
-      if (!isPerFile && !(els.desc.value || "").trim()) {
-        alert("Description is required.");
-        return;
-      }
-
-      const commonText = (els.desc.value || "").trim();
-      const perDescMap = isPerFile ? getPerFileDescriptions() : new Map();
-
-      if (isPerFile) {
-        for (let index = 0; index < fileList.length; index += 1) {
-          if (!(perDescMap.get(index) || "").trim()) {
-            alert(`Description is required for file #${index + 1}.`);
-            return;
-          }
-        }
-      }
-
-      const totalBytes = fileList.reduce((sum, file) => sum + file.size, 0);
-      let doneBytesBefore = 0;
-
-      els.btnUpload.disabled = true;
       setProgress(0);
-      els.statusLine.textContent = `Uploading ${fileList.length} file(s)...`;
+      els.statusLine.textContent = `Uploading ${job.fileCount} file(s) from queue...`;
       els.speedText.textContent = "Speed: -";
       els.etaText.textContent = "ETA: -";
+      setAutoQueueHint(`${job.projectId} is uploading. You can queue more files.`);
 
-      const results = [];
-      const uploadedFileIds = [];
-      const recordingDate = getSelectedRecordingYyyymmdd();
-      const selectedVideoType = (els.videoTypeInput.value || "").trim();
-      if (!selectedVideoType) {
-        alert("Video type is required.");
-        return;
-      }
-
-      const shortLabel = sanitizeLabel((els.fileLabelInput.value || "").trim());
-      if (!shortLabel) {
-        alert("Short label is required.");
-        return;
-      }
-
-      for (let index = 0; index < fileList.length; index += 1) {
-        const file = fileList[index];
-        const seq = await getNextSeqSmallestAvailable(project.projectId);
+      for (let index = 0; index < job.fileEntries.length; index += 1) {
+        const entry = job.fileEntries[index];
+        const file = entry.file;
+        const seq = await getNextSeqSmallestAvailable(job.projectId);
         const ext = getFileExt(file.name);
         const finalName = buildUploadFileName({
-          projectId: project.projectId,
-          recordingDate,
+          projectId: job.projectId,
+          recordingDate: job.recordingDate,
           seq,
-          label: shortLabel,
+          label: job.shortLabel,
           ext,
         });
 
-        els.currentFileText.textContent = `Current: ${index + 1}/${fileList.length}  ${file.name}`;
+        job.currentFileIndex = index + 1;
+        job.currentFileName = file.name;
+        els.currentFileText.textContent = `Current: ${index + 1}/${job.fileCount}  ${file.name}`;
         els.finalNameText.textContent = `Final name: ${finalName}`;
+        renderUploadQueue();
 
-        const description = isPerFile ? (perDescMap.get(index) || "") : commonText;
         const appProperties = {
           schema: CONFIG.APP_SCHEMA,
-          projectId: project.projectId,
-          projectNo: String(project.projectNo),
+          projectId: job.projectId,
+          projectNo: String(job.projectNo),
           seq: String(seq),
           uploaderEmail: myEmail,
-          recordingDate,
-          videoType: selectedVideoType,
+          recordingDate: job.recordingDate,
+          videoType: job.selectedVideoType,
         };
 
         const uploadUrl = await drive.startResumableUpload({
           fileName: finalName,
-          folderId: project.folderId,
-          description,
+          folderId: job.folderId,
+          description: entry.description,
           file,
           appProperties,
         });
 
         const uploaded = await drive.uploadInChunks(uploadUrl, file, CONFIG.CHUNK_SIZE, (status) => {
-          const overall = Math.floor(((doneBytesBefore + status.fileOffset) / totalBytes) * 100);
+          const overall = Math.floor(((doneBytesBefore + status.fileOffset) / progressBaseBytes) * 100);
           setProgress(overall);
+          job.progressPercent = overall;
 
           if (status.speedBps > 0) {
             emaSpeed = emaSpeed === 0 ? status.speedBps : EMA_ALPHA * status.speedBps + (1 - EMA_ALPHA) * emaSpeed;
           }
 
-          els.speedText.textContent = `Speed: ${formatSpeed(emaSpeed)}`;
-          const remaining = totalBytes - (doneBytesBefore + status.fileOffset);
-          els.etaText.textContent = `ETA: ${formatETA(emaSpeed > 0 ? remaining / emaSpeed : Infinity)}`;
+          job.speedText = `Speed: ${formatSpeed(emaSpeed)}`;
+          job.etaText = `ETA: ${formatETA(emaSpeed > 0 ? (Math.max(0, totalBytes - (doneBytesBefore + status.fileOffset))) / emaSpeed : Infinity)}`;
+          els.speedText.textContent = job.speedText;
+          els.etaText.textContent = job.etaText;
+          renderUploadQueue();
         });
 
         const fileId = uploaded.id;
         const driveLink = `https://drive.google.com/file/d/${fileId}/view`;
-        const templateId = els.templateSelect.value || "none";
 
         await appendLogRow([
           new Date().toISOString(),
-          project.projectId,
+          job.projectId,
           myEmail,
           String(seq),
           finalName,
           String(file.size),
-          description,
+          entry.description,
           fileId,
           driveLink,
-          templateId,
+          job.templateId,
           APP_VERSION,
-          selectedVideoType,
+          job.selectedVideoType,
         ]);
 
-        results.push({ finalName, driveLink });
-        uploadedFileIds.push(fileId);
+        job.results.push({ finalName, driveLink });
+        job.uploadedFileIds.push(fileId);
         doneBytesBefore += file.size;
+        job.progressPercent = Math.floor((doneBytesBefore / progressBaseBytes) * 100);
+        renderUploadQueue();
       }
 
+      job.status = "completed";
+      job.progressPercent = 100;
+      job.currentFileIndex = job.fileCount;
+      job.currentFileName = "";
+      job.speedText = "Speed: -";
+      job.etaText = "ETA: 00:00";
       setProgress(100);
-      els.statusLine.textContent = `Done: ${fileList.length} file(s) uploaded.`;
+      els.statusLine.textContent = `Done: ${job.fileCount} file(s) uploaded.`;
       els.speedText.textContent = "Speed: -";
       els.etaText.textContent = "ETA: 00:00";
-
-      if (results.length > 0) {
-        alert(`Upload complete:\n${results.map((result) => result.finalName).join("\n")}`);
-      } else {
-        alert("Upload complete");
-      }
-
-      els.progressWrap.style.display = "none";
-      resetUploadFormUI();
-      await loadProjects();
-      await loadMyHistory(20);
-
-      if (uploadedFileIds.length > 0) {
-        const tableWrap = els.history.querySelector(".tableWrap");
-        let firstMatch = null;
-        for (const id of uploadedFileIds) {
-          const row = els.history.querySelector(`tr[data-file-id="${id}"]`);
-          if (!row) continue;
-          row.classList.add("rowHighlight");
-          row.addEventListener("animationend", () => row.classList.remove("rowHighlight"), { once: true });
-          if (!firstMatch) firstMatch = row;
-        }
-
-        if (tableWrap) {
-          tableWrap.scrollTop = firstMatch
-            ? Math.max(0, firstMatch.offsetTop - tableWrap.offsetTop - 20)
-            : 0;
-        }
-      }
+      renderUploadQueue();
     } catch (error) {
       console.error(error);
-      alert("Upload failed (see console)");
+      job.status = "failed";
+      job.errorMessage = error?.message || "Upload failed. See console.";
+      job.speedText = "Speed: -";
+      job.etaText = "ETA: -";
+      els.statusLine.textContent = `${job.projectId} failed.`;
+      els.speedText.textContent = "Speed: -";
+      els.etaText.textContent = "ETA: -";
+      setAutoQueueHint(`Queue item failed for ${job.projectId}. Review it and queue again if needed.`);
+      renderUploadQueue();
     } finally {
+      uploadInProgress = false;
+      await refreshHistoryAfterQueueJob(job.uploadedFileIds);
+      setUploadEnabledState();
+    }
+  }
+
+  async function processUploadQueue() {
+    if (queueRunnerActive || !accessToken) return;
+
+    queueRunnerActive = true;
+    try {
+      while (true) {
+        const nextJob = uploadQueue.find((job) => job.status === "queued");
+        if (!nextJob) break;
+        await processQueueJob(nextJob);
+      }
+    } finally {
+      queueRunnerActive = false;
+      if (!hasQueueWork()) {
+        clearCurrentUploadStatusUI();
+        if (getSelectedFiles().length === 0 && !pendingAutoQueue) {
+          resetAutoQueueHint();
+        }
+      }
+      renderUploadQueue();
       setUploadEnabledState();
     }
   }
 
   function bindEvents(tokenClient) {
-    els.descModeCommon.onchange = updateDescModeUI;
-    els.descModePerFile.onchange = updateDescModeUI;
-    els.videoTypeSelect.onchange = () => syncVideoTypeInputFromSelect();
-    els.videoTypeInput.oninput = () => setUploadEnabledState();
-    els.btnUpload.onclick = handleUpload;
+    els.descModeCommon.onchange = () => {
+      updateDescModeUI();
+      attemptAutoQueue();
+    };
+    els.descModePerFile.onchange = () => {
+      updateDescModeUI();
+      attemptAutoQueue();
+    };
+    els.videoTypeSelect.onchange = () => {
+      syncVideoTypeInputFromSelect();
+      attemptAutoQueue();
+    };
+    els.videoTypeInput.oninput = () => {
+      setUploadEnabledState();
+      attemptAutoQueue();
+    };
+    els.desc.oninput = () => {
+      setUploadEnabledState();
+      attemptAutoQueue();
+    };
+    els.recordingDateInput.oninput = () => {
+      setUploadEnabledState();
+      attemptAutoQueue();
+    };
+    els.fileLabelInput.oninput = () => {
+      setUploadEnabledState();
+      attemptAutoQueue();
+    };
+    els.perFileList.addEventListener("input", () => {
+      setUploadEnabledState();
+      attemptAutoQueue();
+    });
+    els.btnUpload.onclick = () => {
+      pendingAutoQueue = false;
+      enqueueUploadDraft({ interactive: true });
+    };
+    els.btnClearQueueDone.onclick = () => {
+      uploadQueue = uploadQueue.filter((job) => job.status !== "completed" && job.status !== "failed");
+      renderUploadQueue();
+      setUploadEnabledState();
+    };
+    els.uploadQueue.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const button = target.closest("button[data-queue-action]");
+      if (!button) return;
+
+      const queueId = button.getAttribute("data-queue-id") || "";
+      const action = button.getAttribute("data-queue-action") || "";
+      const job = getQueueJobById(queueId);
+      if (!job) return;
+
+      if (action === "remove" && job.status !== "uploading") {
+        uploadQueue = uploadQueue.filter((item) => item.id !== queueId);
+        renderUploadQueue();
+        setUploadEnabledState();
+        return;
+      }
+    });
 
     if (els.rememberSignin) {
       els.rememberSignin.checked = getRememberEnabled();
@@ -1035,6 +1380,7 @@ export function initIndexPage() {
         if (els.projectSelect.value) localStorage.setItem(STORAGE_KEYS.LAST_PROJECT, els.projectSelect.value);
       } catch {}
       setUploadEnabledState();
+      attemptAutoQueue();
     });
   }
 

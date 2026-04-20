@@ -54,7 +54,7 @@ flowchart TD
 | `app.js` | Shared config object (`CONFIG`) for OAuth, Sheet names/IDs, Drive root folder, admin email, scopes, upload chunk size, and description templates |
 | `index.html` | Main uploader page markup plus module bootstrap for `js/pages/index-page.js` |
 | `admin.html` | Admin page markup plus module bootstrap for `js/pages/admin-page.js` |
-| `js/pages/index-page.js` | Main user flow: sign-in screen, uploader UI, video-type loading, per-file/common descriptions, Drive resumable upload, Log append, personal history, inline history editing |
+| `js/pages/index-page.js` | Main user flow: sign-in screen, uploader UI, video-type loading, per-file/common descriptions, in-memory upload queue, Drive resumable upload, Log append, personal history, inline history editing |
 | `js/pages/admin-page.js` | Admin-only flow: admin auth gate, permission grants, local allowed-email editor, project CRUD-lite, recent file search, Drive delete + Log row delete |
 | `js/shared/*.js` | Shared contracts, auth helpers, formatting helpers, filename helpers, and browser storage keys |
 | `js/services/*.js` | Low-level Google Drive and Google Sheets API wrappers used by both pages |
@@ -258,6 +258,9 @@ Behavior:
 Primary helpers:
 
 - drag/drop listeners on `dropZone`
+- `syncSelectedFilesUI()`
+- `attemptAutoQueue()`
+- `enqueueUploadDraft()`
 - `updateSelectedSize()`
 
 Behavior:
@@ -265,13 +268,19 @@ Behavior:
 - Only video MIME types are accepted during drag/drop
 - File selection order is preserved and upload order follows that same order
 - Selecting files rebuilds per-file description editors
-- Recording date defaults to the current Tokyo date whenever files are newly selected
+- If all required upload fields are already valid, selecting files creates a queue item immediately
+- If required fields are still missing, the page keeps a pending auto-queue state and queues the files as soon as the missing fields are filled
+- Queueing clears the selected files and short label so the user can prepare the next job while the current one uploads
+- Recording date defaults to the current Tokyo date only when the field is blank at file-selection time
 
 ### Upload pipeline
 
 Primary helpers:
 
-- `getSelectedRecordingYyyymmdd()`
+- `buildUploadDraft()`
+- `createQueueJobFromDraft()`
+- `processQueueJob()`
+- `processUploadQueue()`
 - `getNextSeqSmallestAvailable()`
 - `drive.startResumableUpload()`
 - `uploadInChunks()`
@@ -282,26 +291,57 @@ Actual upload sequence:
 1. Validate:
    - at least one file selected
    - project selected
+   - recording date is either blank or parseable
    - description present
    - video type present
    - short label present
-2. Compute `dateStr` from the selected recording date or Tokyo "today".
-3. For each selected file, in order:
+2. Snapshot the current form into an in-memory queue item that stores:
+   - project metadata
+   - recording date
+   - short label
+   - video type
+   - template ID
+   - selected file objects
+   - resolved per-file or common descriptions
+3. A single queue runner processes queued items one at a time.
+4. For each selected file in the queue item, in order:
    - compute the next sequence using `getNextSeqSmallestAvailable(projectId)`
    - derive the file extension from the original name
    - construct the final filename
    - create a Drive resumable upload session
    - upload the file in chunks using `CONFIG.CHUNK_SIZE`
    - append a log row to `Log`
-4. After all files succeed:
-   - reset upload UI
-   - reload projects and history
+5. After each queue item finishes or partially finishes:
    - highlight newly uploaded rows in history if they appear in the reloaded table
+   - keep later queued items moving even if one item failed
 
 Progress model:
 
-- Progress is overall across all selected files, not per-file only.
+- Progress is overall across the currently uploading queue item, not the entire queue.
 - Speed display uses an exponential moving average.
+- The main form stays editable while a queue item is uploading.
+- `uploadInProgress` and `queueRunnerActive` prevent overlapping queue runners.
+
+### Upload queue
+
+Primary helpers:
+
+- `renderUploadQueue()`
+- `clearDraftSelectionUI()`
+- delegated `uploadQueue` click handler
+
+Behavior:
+
+- Queue items exist only in browser memory.
+- Statuses are:
+  - `queued`
+  - `uploading`
+  - `completed`
+  - `failed`
+- `queued` items can be removed before they start.
+- `completed` and `failed` items can be dismissed from the queue UI.
+- `failed` items are not retried automatically, because a partial batch may already have uploaded some files.
+- Logging out while there is queued or active work is blocked by disabling the sign-out button.
 
 ### Sequence generation
 
@@ -502,6 +542,7 @@ Deletion is available from:
 
 - theme variables
 - shared layout primitives (`container`, `grid`, `card`, `row`)
+- responsive shell utilities (`containerWide`, `gridWide`, `gridHistoryPriority`, `gridSingleWide`)
 - form controls
 - buttons
 - table styling
@@ -509,6 +550,12 @@ Deletion is available from:
 - uploader-specific UI blocks
 
 There is no CSS module or component-level scoping. Both HTML pages rely on the same global class names and variables.
+
+Desktop layout priority:
+
+- `index.html` uses a history-first two-column grid, so `My upload history` becomes wider than `Upload` on medium and large screens.
+- On extra-wide desktops, the history column is intentionally favored much more aggressively than the upload column.
+- `admin.html` stays single-column, but now inherits the wider fluid shell so list-heavy cards are less constrained by the old fixed-width container.
 
 ## Known quirks and maintenance traps
 
@@ -535,8 +582,9 @@ These are important. Do not "fix" them accidentally without documenting the beha
    - Admin delete removes the Drive file first, then removes matching `Log` rows.
    - If the second step fails, Drive and Sheets can become inconsistent.
 
-6. Upload is sequential and partially persistent.
-   - If a later file fails, earlier files and earlier log rows remain.
+6. Upload queue work is in-memory, sequential, and partially persistent.
+   - Refreshing the page clears queued items that have not started yet.
+   - If a later file in a queue item fails, earlier files and earlier log rows remain.
    - There is no rollback or cleanup step.
 
 7. The admin access list and project-folder permissions are not the same view.
@@ -556,7 +604,9 @@ If you need to change behavior, start with these functions:
 | Main page login/bootstrap | `setLoggedOut`, `setLoggedIn`, `fetchMyEmail`, `tokenClient.callback` in `js/pages/index-page.js` |
 | Project dropdown | `loadProjects` in `js/pages/index-page.js` |
 | Video type loading | `loadVideoTypesFromLog` in `js/pages/index-page.js` |
-| Upload execution | `handleUpload`, `startResumableUpload`, `uploadInChunks`, `appendLogRow` across `js/pages/index-page.js` and `js/services/drive.js` |
+| Upload readiness and auto-queue | `buildUploadDraft`, `syncSelectedFilesUI`, `attemptAutoQueue`, `enqueueUploadDraft` in `js/pages/index-page.js` |
+| Upload queue rendering and actions | `renderUploadQueue`, delegated `uploadQueue` click handler in `js/pages/index-page.js` |
+| Upload execution | `processQueueJob`, `processUploadQueue`, `startResumableUpload`, `uploadInChunks`, `appendLogRow` across `js/pages/index-page.js` and `js/services/drive.js` |
 | History edit | delegated `history` click handler, `updateDriveFileMeta`, `updateLogRowAfterInlineEdit` in `js/pages/index-page.js` |
 | Admin sign-in gate | `tokenClient.callback`, `showBlocked`, `showAdmin` in `js/pages/admin-page.js` |
 | Granting access | `grantUserAccessToUploader`, `loadAccessList` in `js/pages/admin-page.js` |

@@ -52,10 +52,20 @@ a:hover{ text-decoration: underline; }
 
 /* ─── Container ─────────────────────────────────────── */
 .container{
-  max-width: 1160px;
+  width: min(98vw, 1840px);
   margin: 0 auto;
   padding: 28px 20px 80px;
   min-width: 0;
+}
+@media(max-width: 640px){
+  .container{
+    width: 100%;
+    padding: 18px 14px 48px;
+  }
+}
+
+.containerWide{
+  width: min(98vw, 1840px);
 }
 
 /* ─── Header ─────────────────────────────────────────── */
@@ -110,12 +120,34 @@ a:hover{ text-decoration: underline; }
 .grid{
   display: grid;
   grid-template-columns: 1fr;
-  gap: 2px;
-  margin-top: 2px;
+  gap: 12px;
+  margin-top: 12px;
   align-items: start; /* 各カードが独立した高さを持つ */
 }
+
+.gridWide,
+.gridSingleWide{
+  width: 100%;
+}
+
 @media(min-width: 980px){
-  .grid{ grid-template-columns: 1.05fr .95fr; }
+  .gridWide{ grid-template-columns: minmax(340px, .9fr) minmax(520px, 1.1fr); }
+}
+
+@media(min-width: 1160px){
+  .gridHistoryPriority{ grid-template-columns: minmax(340px, 0.7fr) minmax(760px, 1.3fr); }
+}
+
+@media(min-width: 1480px){
+  .gridHistoryPriority{ grid-template-columns: minmax(340px, 0.56fr) minmax(920px, 1.44fr); }
+}
+
+@media(min-width: 1760px){
+  .gridHistoryPriority{ grid-template-columns: minmax(360px, 0.5fr) minmax(1040px, 1.5fr); }
+}
+
+@media(min-width: 980px){
+  .gridSingleWide{ grid-template-columns: 1fr; }
 }
 
 /* ─── Cards ──────────────────────────────────────────── */
@@ -127,6 +159,9 @@ a:hover{ text-decoration: underline; }
   box-shadow: none;
   min-width: 0;        /* グリッド内でのオーバーフローを防ぐ */
 }
+
+.uploadCard{ min-width: 0; }
+.historyCard{ min-width: 0; }
 
 .card h2{
   margin: 0 0 6px;
@@ -351,6 +386,109 @@ progress::-moz-progress-bar{ background: var(--primary); }
 }
 
 /* ─── Text utilities ─────────────────────────────────── */
+.queuePanel{
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  padding: 14px;
+  background: var(--bg3);
+}
+
+.queuePanelHeader{
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.queueList{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.queueEmpty{
+  border: 1px dashed var(--border);
+  background: rgba(0,0,0,.12);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 14px;
+}
+
+.queueItem{
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.queueItemUploading{ border-color: rgba(201,168,130,.42); }
+.queueItemFailed{ border-color: rgba(192,113,90,.42); }
+.queueItemCompleted{ border-color: rgba(240,220,196,.12); }
+
+.queueItemTop{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.queueTitle{
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.queueMeta,
+.queueDetail{
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.queueBadge{
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.queueBadgeQueued{ color: var(--text); }
+.queueBadgeUploading{ border-color: rgba(201,168,130,.42); color: var(--primary); }
+.queueBadgeCompleted{ color: rgba(240,220,196,.72); }
+.queueBadgeFailed{ border-color: rgba(192,113,90,.42); color: var(--danger); }
+
+.queueProgress{
+  width: 100%;
+  height: 4px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.queueProgressBar{
+  height: 100%;
+  width: 0;
+  background: var(--primary);
+  transition: width .15s ease;
+}
+
+.queueItemFailed .queueProgressBar{
+  background: var(--danger);
+}
+
+.queueActions{
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .mono{ font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .small{ font-size: 11px; color: var(--muted); }
 
@@ -375,12 +513,13 @@ progress::-moz-progress-bar{ background: var(--primary); }
   background: var(--bg3);
   max-height: 70vh;    /* 高さ上限：画面の70%まで */
   -webkit-overflow-scrolling: touch;
+  width: 100%;
 }
 
 table{
   width: 100%;
   border-collapse: collapse;
-  min-width: 860px;
+  min-width: 700px;
   background: var(--bg3);
 }
 th, td{
@@ -405,7 +544,16 @@ th{
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
-td.desc{ min-width: 320px; }
+td.desc{ min-width: 400px; }
+
+@media(min-width: 1400px){
+  table{ min-width: 660px; }
+  td.desc{ min-width: 500px; }
+}
+
+@media(min-width: 1760px){
+  td.desc{ min-width: 560px; }
+}
 
 .footerNote{
   margin-top: 14px;

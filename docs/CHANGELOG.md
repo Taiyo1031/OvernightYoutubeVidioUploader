@@ -144,3 +144,111 @@ Rules:
 ### Verification performed
 - Reviewed the current Pages workflow references against the local workflow file
 - Cross-checked official GitHub action release information for Node 24 compatible major versions
+
+## 2026-04-21 JST (Responsive History-First Layout)
+
+### Summary
+- Reworked the shared shell and grid CSS to be more fluid on larger screens.
+- Made the main page desktop layout history-first so `My upload history` gets more width than `Upload`.
+- Added reusable layout utility classes so future pages can opt into wide single-column or responsive two-column behavior without inline grid overrides.
+
+### Affected flows
+- Main page desktop layout
+- Main page history table usability
+- Shared page shell/layout behavior
+- Admin page width behavior
+
+### Data-contract changes
+- None
+
+### Files touched
+- `style.css`
+- `index.html`
+- `admin.html`
+- `docs/ARCHITECTURE.md`
+- `docs/CHANGELOG.md`
+
+### Verification performed
+- Reviewed the main page and admin page HTML class wiring for the new layout utilities
+- Checked desktop and mobile breakpoints in shared CSS for stacked and two-column behavior
+- Verified the history table keeps horizontal scrolling as fallback while gaining more desktop width
+
+## 2026-04-21 JST (Wider History Desktop Tuning)
+
+### Summary
+- Increased the responsive shell width again for larger displays.
+- Rebalanced the desktop history-first grid so `My upload history` takes substantially more space on wide and extra-wide screens.
+- Expanded the effective description column capacity so the wider history area translates into better readability instead of unused margin.
+
+### Affected flows
+- Main page desktop layout
+- Main page history table readability
+- Shared wide-screen shell behavior
+
+### Data-contract changes
+- None
+
+### Files touched
+- `style.css`
+- `docs/ARCHITECTURE.md`
+- `docs/CHANGELOG.md`
+
+### Verification performed
+- Reviewed updated wide-screen breakpoints and grid ratios
+- Checked history table minimum-width and description-column sizing after the wider shell change
+
+## 2026-04-21 JST (Auto Upload On File Selection)
+
+### Summary
+- Added a pending auto-upload flow on the main page so selecting video files starts upload immediately when the required fields are already valid.
+- Centralized upload validation into `buildUploadDraft()` so manual upload and auto upload follow the same rules.
+- Added duplicate-submission protection with `uploadInProgress` and surfaced auto-upload waiting status in the UI.
+- Tightened recording-date validation so a non-empty invalid date no longer silently falls back to Tokyo "today".
+
+### Affected flows
+- Main upload flow
+- File selection and drag/drop behavior
+- Upload validation and duplicate-submission handling
+
+### Data-contract changes
+- None
+
+### Files touched
+- `index.html`
+- `js/pages/index-page.js`
+- `docs/ARCHITECTURE.md`
+- `docs/CHANGELOG.md`
+
+### Verification performed
+- Reviewed the shared validation path used by both auto and manual upload triggers
+- Checked that file-picker and drag/drop selection now feed the same auto-upload path
+- Verified that pending auto-upload waits for missing fields instead of triggering validation alerts immediately
+
+## 2026-04-21 JST (In-Memory Upload Queue)
+
+### Summary
+- Replaced the direct main-page upload trigger with an in-memory upload queue that snapshots the current form into queue jobs.
+- Kept the auto-start behavior conceptually, but it now auto-queues once required fields are valid instead of directly sending the current form state.
+- Allowed the upload form to remain usable while another queue item is uploading, so additional videos can be prepared and queued in parallel.
+- Added queue UI for `queued`, `uploading`, `completed`, and `failed` states, plus removal and finished-item cleanup actions.
+
+### Affected flows
+- Main upload flow
+- File selection and drag/drop behavior
+- Upload progress and status display
+- Sign-out behavior during active uploads
+
+### Data-contract changes
+- None
+
+### Files touched
+- `index.html`
+- `style.css`
+- `js/pages/index-page.js`
+- `docs/ARCHITECTURE.md`
+- `docs/CHANGELOG.md`
+
+### Verification performed
+- Reviewed queue state transitions for queued, uploading, completed, and failed jobs
+- Checked that file selection now snapshots into queue jobs instead of blocking the form until completion
+- Verified that upload progress UI remains tied to the currently active queue item while the queue list shows pending and finished work
