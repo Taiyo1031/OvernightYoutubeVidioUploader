@@ -69,7 +69,8 @@ flowchart TD
 | Google Drive API | both pages | Upload files, search files, patch metadata, create folders, manage permissions, delete files |
 | Google Sheets API | both pages | Load projects, append log rows, update project flags, update history metadata, delete log rows |
 | OAuth userinfo endpoint | both pages | Resolve signed-in email address |
-| `localStorage` | both pages | Remember sign-in flag, last selected project, browser-local allowed-email display list |
+| First-party cookies | both pages | 7-day remember-sign-in preference and display-only cached email hint |
+| `localStorage` | both pages | Last selected project and browser-local allowed-email display list |
 
 ## Configuration contract (`app.js`)
 
@@ -162,11 +163,28 @@ Helper functions that depend on this format:
 - `extractLabelFromFileName()` in `js/shared/file-name.js`
 - `extractExtFromFileName()` in `js/shared/file-name.js`
 
-### Browser-local storage keys
+### Browser persistence
+
+#### Cookies
+
+These cookies are first-party browser cookies with `Path=/`, `SameSite=Lax`, `Secure`, and `Max-Age=604800`.
 
 | Key | Used by | Meaning |
 | --- | --- | --- |
-| `devlog_remember_signin` | both pages | If not `"0"`, page tries silent sign-in on load |
+| `devlog_remember_signin` | both pages | If the value is `"1"`, the page attempts silent sign-in on load |
+| `devlog_last_email` | both pages | Display-only cached email shown on signed-out screens as a hint |
+
+Important rules:
+
+- No cookie stores `access_token`, refresh tokens, or any reusable Google API credential.
+- Silent sign-in still depends on the browser's Google session state and `requestAccessToken({ prompt: "" })`.
+- Explicit logout clears both cookies.
+- The old `localStorage.devlog_remember_signin` value is migrated into the remember cookie once, then the cookie becomes authoritative.
+
+#### `localStorage`
+
+| Key | Used by | Meaning |
+| --- | --- | --- |
 | `devlog_last_project` | `index.html` | Restores last selected project in the uploader page |
 | `devlog_allowed_emails` | both pages | Browser-local list used for login-screen display; not a server-side or shared permission source |
 
@@ -188,18 +206,22 @@ Runtime behavior:
 1. On load, the page clears UI state with `setLoggedOut()`.
 2. The login screen shows an allowed-account list.
 3. That list is built from `localStorage.devlog_allowed_emails` if present, otherwise from `CONFIG.ALLOWED_EMAILS`.
-4. If remember-sign-in is enabled, the page attempts silent auth with `requestAccessToken({ prompt: "" })`.
+4. If `devlog_remember_signin=1` is present in the cookie jar, the page attempts silent auth with `requestAccessToken({ prompt: "" })`.
 5. On successful auth:
    - resolves the email via the Google userinfo endpoint
+   - caches that email into the display-only `devlog_last_email` cookie for 7 days
    - hides the login screen
    - enables uploader controls
    - loads templates, video types, projects, and recent history
    - shows the admin link only if `myEmail === CONFIG.ADMIN_EMAIL`
-6. If Google API access later fails with 403, the page shows a post-login "No access" state.
+6. If silent sign-in fails, the page stays signed out and may still show the cached-email hint until cookie expiry or explicit logout.
+7. If Google API access later fails with 403, the page shows a post-login "No access" state.
+8. On explicit logout, the page clears both auth-related cookies.
 
 Important note:
 
 - The login-screen allowed email list is informational UI only. Real access depends on Google Drive/Sheets permissions, not that list.
+- The cached email hint is informational UI only. It does not mean the user is authenticated.
 
 ### Project loading
 
@@ -258,6 +280,7 @@ Behavior:
 Primary helpers:
 
 - drag/drop listeners on `dropZone`
+- `getSelectedMultiFileQueueMode()`
 - `syncSelectedFilesUI()`
 - `attemptAutoQueue()`
 - `enqueueUploadDraft()`
@@ -266,7 +289,12 @@ Primary helpers:
 Behavior:
 
 - Only video MIME types are accepted during drag/drop
+- Both file picker multi-select and drag/drop multi-file selection are supported
 - File selection order is preserved and upload order follows that same order
+- A multi-file queue mode toggle exists with:
+  - default `batch as one queue item`
+  - optional `split into one queue item per file`
+- The toggle only changes behavior when more than one file is selected
 - Selecting files rebuilds per-file description editors
 - If all required upload fields are already valid, selecting files creates a queue item immediately
 - If required fields are still missing, the page keeps a pending auto-queue state and queues the files as soon as the missing fields are filled
@@ -278,7 +306,7 @@ Behavior:
 Primary helpers:
 
 - `buildUploadDraft()`
-- `createQueueJobFromDraft()`
+- `createQueueJobsFromDraft()`
 - `processQueueJob()`
 - `processUploadQueue()`
 - `getNextSeqSmallestAvailable()`
@@ -295,7 +323,7 @@ Actual upload sequence:
    - description present
    - video type present
    - short label present
-2. Snapshot the current form into an in-memory queue item that stores:
+2. Snapshot the current form into one or more in-memory queue items that store:
    - project metadata
    - recording date
    - short label
@@ -303,15 +331,18 @@ Actual upload sequence:
    - template ID
    - selected file objects
    - resolved per-file or common descriptions
-3. A single queue runner processes queued items one at a time.
-4. For each selected file in the queue item, in order:
+3. Queue-item creation depends on the selected multi-file mode:
+   - `batch`: one queue item can hold multiple files
+   - `split`: each selected file becomes its own queue item
+4. A single queue runner processes queued items one at a time.
+5. For each selected file in the queue item, in order:
    - compute the next sequence using `getNextSeqSmallestAvailable(projectId)`
    - derive the file extension from the original name
    - construct the final filename
    - create a Drive resumable upload session
    - upload the file in chunks using `CONFIG.CHUNK_SIZE`
    - append a log row to `Log`
-5. After each queue item finishes or partially finishes:
+6. After each queue item finishes or partially finishes:
    - highlight newly uploaded rows in history if they appear in the reloaded table
    - keep later queued items moving even if one item failed
 
@@ -338,6 +369,10 @@ Behavior:
   - `uploading`
   - `completed`
   - `failed`
+- Multi-file behavior can be either:
+  - one batch queue item containing multiple files
+  - one queue item per file in the original selection order
+- Single-file selections always become one queue item regardless of the selected mode.
 - `queued` items can be removed before they start.
 - `completed` and `failed` items can be dismissed from the queue UI.
 - `failed` items are not retried automatically, because a partial batch may already have uploaded some files.
@@ -449,6 +484,7 @@ Primary helpers:
 Behavior:
 
 - Both sign-in and silent sign-in are supported.
+- Remember preference and cached-email hint come from cookies shared with the main page.
 - After login, the page resolves the user email.
 - Full admin UI is shown only if the email matches `CONFIG.ADMIN_EMAIL`.
 - Non-admin users can sign in but are shown a blocked message instead of admin tools.
@@ -595,6 +631,10 @@ These are important. Do not "fix" them accidentally without documenting the beha
    - It does not persist to Drive, Sheets, or the repository.
    - Other browsers will not automatically see that edited list.
 
+9. Remembered sign-in is preference storage, not token storage.
+   - The app only remembers whether it should try silent sign-in and which email to show as a signed-out hint.
+   - Actual re-authentication still depends on the Google browser session.
+
 ## Quick code navigation
 
 If you need to change behavior, start with these functions:
@@ -604,9 +644,9 @@ If you need to change behavior, start with these functions:
 | Main page login/bootstrap | `setLoggedOut`, `setLoggedIn`, `fetchMyEmail`, `tokenClient.callback` in `js/pages/index-page.js` |
 | Project dropdown | `loadProjects` in `js/pages/index-page.js` |
 | Video type loading | `loadVideoTypesFromLog` in `js/pages/index-page.js` |
-| Upload readiness and auto-queue | `buildUploadDraft`, `syncSelectedFilesUI`, `attemptAutoQueue`, `enqueueUploadDraft` in `js/pages/index-page.js` |
+| Upload readiness and auto-queue | `buildUploadDraft`, `getSelectedMultiFileQueueMode`, `syncSelectedFilesUI`, `attemptAutoQueue`, `enqueueUploadDraft` in `js/pages/index-page.js` |
 | Upload queue rendering and actions | `renderUploadQueue`, delegated `uploadQueue` click handler in `js/pages/index-page.js` |
-| Upload execution | `processQueueJob`, `processUploadQueue`, `startResumableUpload`, `uploadInChunks`, `appendLogRow` across `js/pages/index-page.js` and `js/services/drive.js` |
+| Upload execution | `createQueueJobsFromDraft`, `processQueueJob`, `processUploadQueue`, `startResumableUpload`, `uploadInChunks`, `appendLogRow` across `js/pages/index-page.js` and `js/services/drive.js` |
 | History edit | delegated `history` click handler, `updateDriveFileMeta`, `updateLogRowAfterInlineEdit` in `js/pages/index-page.js` |
 | Admin sign-in gate | `tokenClient.callback`, `showBlocked`, `showAdmin` in `js/pages/admin-page.js` |
 | Granting access | `grantUserAccessToUploader`, `loadAccessList` in `js/pages/admin-page.js` |
@@ -623,6 +663,7 @@ Always update this document when any of the following changes:
 - filename format
 - `Projects` or `Log` column meanings
 - Drive `appProperties`
+- cookie or browser-persistence behavior
 - localStorage usage
 - deployment flow
 - upload, history, admin, or deletion behavior

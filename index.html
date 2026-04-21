@@ -24,6 +24,7 @@
         次回からサインインを省略
       </label>
 
+      <div class="loginHint mono" id="lastSigninHint" hidden></div>
       <button class="btnPrimary loginBtn" id="btnLogin">Sign in with Google</button>
       <div id="loginError"></div>
     </div>
@@ -122,6 +123,14 @@
             <div class="dropZoneHint">または動画ファイルをここにドロップ</div>
           </div>
           <div class="small">複数選択可。アップロードは選択順に順次実行されます。</div>
+          <div style="margin-top:10px;">
+            <label class="label">Multi-file queue mode</label>
+            <div class="radio">
+              <label><input type="radio" name="multiFileQueueMode" id="multiQueueModeBatch" value="batch" checked disabled> Batch as one queue item</label>
+              <label><input type="radio" name="multiFileQueueMode" id="multiQueueModeSplit" value="split" disabled> Split into one queue item per file</label>
+            </div>
+            <div class="small">Only affects multi-file selections. Single-file uploads always queue as one item.</div>
+          </div>
           <div class="small mono" id="selectedSizeText">Selected: 0 file(s), total -</div>
           <div class="small mono" id="autoUploadHint">Files are queued automatically once required fields are ready.</div>
         </div>

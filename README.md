@@ -3,6 +3,7 @@
 Static GitHub Pages app for uploading video files to Google Drive and writing metadata to Google Sheets.
 
 There is no backend server. Both the main page and the admin page run in the browser, obtain a Google OAuth access token, and call Google APIs directly.
+The app does not store Google access tokens, refresh tokens, or other OAuth credentials in cookies or `localStorage`. Silent sign-in still depends on the user's Google session in the browser.
 
 ## Core docs
 
@@ -26,7 +27,9 @@ There is no backend server. Both the main page and the admin page run in the bro
 - Auth: Google Identity Services OAuth token flow in the browser
 - Storage: Google Drive
 - Metadata store: Google Sheets
-- Persistence in browser: `localStorage`
+- Persistence in browser:
+  - 7-day first-party cookies for `devlog_remember_signin` and display-only `devlog_last_email`
+  - `localStorage` only for non-auth browser state such as `devlog_last_project` and `devlog_allowed_emails`
 
 ## Documentation contract
 

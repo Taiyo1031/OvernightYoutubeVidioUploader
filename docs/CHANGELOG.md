@@ -252,3 +252,68 @@ Rules:
 - Reviewed queue state transitions for queued, uploading, completed, and failed jobs
 - Checked that file selection now snapshots into queue jobs instead of blocking the form until completion
 - Verified that upload progress UI remains tied to the currently active queue item while the queue list shows pending and finished work
+
+## 2026-04-21 JST (Selectable Multi-File Queue Modes)
+
+### Summary
+- Added a multi-file queue mode toggle on the main page with `batch as one queue item` as the default and `split into one queue item per file` as the alternative.
+- Kept drag-and-drop and multi-file picker support, but extended queue creation so both entry paths honor the selected multi-file mode.
+- Preserved automatic queueing once required fields are ready, including in split mode.
+- Kept the queue runner sequential while allowing split-mode queue items to proceed independently if one item fails.
+
+### Affected flows
+- Main upload flow
+- File picker multi-select behavior
+- Drag-and-drop multi-file behavior
+- Upload queue creation and display
+
+### Data-contract changes
+- None
+
+### Files touched
+- `index.html`
+- `js/pages/index-page.js`
+- `docs/ARCHITECTURE.md`
+- `docs/CHANGELOG.md`
+
+### Verification performed
+- Reviewed queue creation for single-file, multi-file batch, and multi-file split cases
+- Checked that common-description and per-file-description modes both map correctly into split queue items
+- Verified that the selected mode only changes queue construction and does not change the sequential upload runner
+
+## 2026-04-21 JST (Cookie Remember Sign-In Persistence)
+
+### Summary
+- Replaced the old `localStorage` remember-sign-in flag with a 7-day first-party cookie.
+- Added a second 7-day cookie that stores only the last resolved signed-in email as a display hint on signed-out screens.
+- Applied the new cookie-based persistence to both the main page and the admin page without storing OAuth tokens in browser persistence.
+- Added one-time migration from legacy `localStorage.devlog_remember_signin` to the new remember cookie.
+
+### Affected flows
+- Main page sign-in and silent sign-in
+- Main page logout flow
+- Admin page sign-in and silent sign-in
+- Admin page logout flow
+- Signed-out login UI hints
+
+### Data-contract changes
+- `devlog_remember_signin` moved from `localStorage` to cookie storage
+- Added cookie `devlog_last_email`
+- `devlog_last_project` and `devlog_allowed_emails` remain in `localStorage`
+
+### Files touched
+- `index.html`
+- `admin.html`
+- `style.css`
+- `js/shared/constants.js`
+- `js/shared/auth.js`
+- `js/pages/index-page.js`
+- `js/pages/admin-page.js`
+- `README.md`
+- `docs/ARCHITECTURE.md`
+- `docs/CHANGELOG.md`
+
+### Verification performed
+- Reviewed the new shared auth helpers to confirm cookies include `Path=/`, `SameSite=Lax`, `Secure`, and `Max-Age=604800`
+- Checked both page entrypoints for remember-cookie reads, cached-email hint rendering, and explicit logout cookie clearing
+- Verified that no access token or refresh token is written into cookies or `localStorage`

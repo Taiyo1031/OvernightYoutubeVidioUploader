@@ -1,5 +1,15 @@
 import { CONFIG } from "../../app.js";
-import { fetchMyEmail, getRememberEnabled, isAdminEmail, isPermissionDeniedError, loadAllowedEmails, setRememberEnabled } from "../shared/auth.js";
+import {
+  clearRememberSigninCookies,
+  fetchMyEmail,
+  getCachedSigninEmail,
+  getRememberEnabled,
+  isAdminEmail,
+  isPermissionDeniedError,
+  loadAllowedEmails,
+  setCachedSigninEmail,
+  setRememberEnabled,
+} from "../shared/auth.js";
 import { APP_VERSION, DEFAULT_VIDEO_TYPE, LOG_COLUMNS, PROJECTS_COLUMNS, STORAGE_KEYS } from "../shared/constants.js";
 import { buildUploadFileName, extractExtFromFileName, extractLabelFromFileName, extractYyyymmddFromFileName, getFileExt, sanitizeLabel } from "../shared/file-name.js";
 import { escapeHtml, formatBytes, formatETA, formatSpeed, normalizeDateInputToYyyymmdd, toTokyo, ymdTokyo, yyyymmddTokyo } from "../shared/format.js";
@@ -18,6 +28,10 @@ export function initIndexPage() {
   let queueRunnerActive = false;
   let pendingAutoQueue = false;
   let nextQueueItemId = 1;
+  const MULTI_FILE_QUEUE_MODES = {
+    BATCH: "batch",
+    SPLIT: "split",
+  };
 
   const els = {
     me: document.getElementById("me"),
@@ -37,6 +51,8 @@ export function initIndexPage() {
     videoTypeInput: document.getElementById("videoTypeInput"),
     videoTypeInfo: document.getElementById("videoTypeInfo"),
     fileInput: document.getElementById("file"),
+    multiQueueModeBatch: document.getElementById("multiQueueModeBatch"),
+    multiQueueModeSplit: document.getElementById("multiQueueModeSplit"),
     selectedSizeText: document.getElementById("selectedSizeText"),
     autoUploadHint: document.getElementById("autoUploadHint"),
     btnUpload: document.getElementById("btnUpload"),
@@ -60,6 +76,7 @@ export function initIndexPage() {
     loginScreen: document.getElementById("loginScreen"),
     allowedEmailList: document.getElementById("allowedEmailList"),
     loginError: document.getElementById("loginError"),
+    lastSigninHint: document.getElementById("lastSigninHint"),
     dropZone: document.getElementById("dropZone"),
   };
 
@@ -73,10 +90,34 @@ export function initIndexPage() {
 
   function showLoginScreen() {
     els.loginScreen.style.display = "flex";
+    renderLastSigninHint();
   }
 
   function hideLoginScreen() {
     els.loginScreen.style.display = "none";
+    if (els.lastSigninHint) els.lastSigninHint.hidden = true;
+  }
+
+  function renderLastSigninHint() {
+    if (!els.lastSigninHint) return;
+
+    const cachedEmail = !accessToken ? getCachedSigninEmail() : "";
+    if (!cachedEmail) {
+      els.lastSigninHint.hidden = true;
+      els.lastSigninHint.textContent = "";
+      return;
+    }
+
+    els.lastSigninHint.hidden = false;
+    els.lastSigninHint.textContent = `Last signed in as: ${cachedEmail}`;
+  }
+
+  function handleSilentSigninFailure() {
+    silentAuthInProgress = false;
+    els.btnLogin.disabled = false;
+    els.btnLogin.textContent = "Sign in with Google";
+    setLoggedOut();
+    showLoginScreen();
   }
 
   function buildAllowedList() {
@@ -89,6 +130,7 @@ export function initIndexPage() {
   function setLoggedIn(email) {
     els.me.textContent = `Signed in: ${email}`;
     els.btnLogout.disabled = false;
+    renderLastSigninHint();
   }
 
   function setLoggedOut() {
@@ -108,6 +150,8 @@ export function initIndexPage() {
     els.videoTypeSelect.disabled = true;
     els.videoTypeInput.disabled = true;
     els.fileInput.disabled = true;
+    if (els.multiQueueModeBatch) els.multiQueueModeBatch.disabled = true;
+    if (els.multiQueueModeSplit) els.multiQueueModeSplit.disabled = true;
     els.btnUpload.disabled = true;
     els.recordingDateInput.disabled = true;
     els.fileLabelInput.disabled = true;
@@ -125,6 +169,7 @@ export function initIndexPage() {
     els.etaText.textContent = "ETA: -";
     els.currentFileText.textContent = "";
     els.finalNameText.textContent = "";
+    els.loginError.textContent = "";
     els.selectedSizeText.textContent = "Selected: 0 file(s), total -";
     els.history.textContent = "Signed out";
     els.videoTypeSelect.innerHTML = "";
@@ -139,10 +184,13 @@ export function initIndexPage() {
     queueRunnerActive = false;
     pendingAutoQueue = false;
     nextQueueItemId = 1;
+    if (els.multiQueueModeBatch) els.multiQueueModeBatch.checked = true;
+    if (els.multiQueueModeSplit) els.multiQueueModeSplit.checked = false;
     resetAutoQueueHint();
     renderUploadQueue();
 
     if (els.adminLink) els.adminLink.style.display = "none";
+    renderLastSigninHint();
   }
 
   function setProgress(percent) {
@@ -190,6 +238,12 @@ export function initIndexPage() {
     return [...(els.fileInput.files || [])];
   }
 
+  function getSelectedMultiFileQueueMode() {
+    return els.multiQueueModeSplit?.checked
+      ? MULTI_FILE_QUEUE_MODES.SPLIT
+      : MULTI_FILE_QUEUE_MODES.BATCH;
+  }
+
   function hasQueueWork() {
     return uploadQueue.some((job) => job.status === "queued" || job.status === "uploading");
   }
@@ -207,6 +261,11 @@ export function initIndexPage() {
     if (status === "completed") return "Completed";
     if (status === "failed") return "Failed";
     return "Queued";
+  }
+
+  function getQueueModeLabel(queueMode, fileCount) {
+    if (queueMode === MULTI_FILE_QUEUE_MODES.SPLIT) return "Per-file queue";
+    return fileCount <= 1 ? "Single file" : "Batch queue";
   }
 
   function buildUploadDraft({ interactive = false } = {}) {
@@ -314,12 +373,15 @@ export function initIndexPage() {
     els.finalNameText.textContent = "";
   }
 
-  function createQueueJobFromDraft(draft) {
-    const fileEntries = draft.fileList.map((file, index) => ({
+  function buildQueueFileEntriesFromDraft(draft) {
+    return draft.fileList.map((file, index) => ({
       file,
       description: draft.isPerFile ? String(draft.perDescMap.get(index) || "") : String(draft.commonText || ""),
     }));
+  }
 
+  function createQueueJob({ draft, fileEntries, queueMode }) {
+    const fileCount = fileEntries.length;
     return {
       id: `queue-${Date.now()}-${nextQueueItemId++}`,
       status: "queued",
@@ -332,8 +394,10 @@ export function initIndexPage() {
       shortLabel: draft.shortLabel,
       selectedVideoType: draft.selectedVideoType,
       templateId: els.templateSelect.value || "none",
+      queueMode,
+      queueModeLabel: getQueueModeLabel(queueMode, fileCount),
       fileEntries,
-      fileCount: fileEntries.length,
+      fileCount,
       totalBytes: fileEntries.reduce((sum, entry) => sum + Number(entry.file.size || 0), 0),
       progressPercent: 0,
       currentFileIndex: 0,
@@ -344,6 +408,25 @@ export function initIndexPage() {
       results: [],
       errorMessage: "",
     };
+  }
+
+  function createQueueJobsFromDraft(draft) {
+    const fileEntries = buildQueueFileEntriesFromDraft(draft);
+    const selectedMode = getSelectedMultiFileQueueMode();
+
+    if (selectedMode === MULTI_FILE_QUEUE_MODES.SPLIT && fileEntries.length > 1) {
+      return fileEntries.map((entry) => createQueueJob({
+        draft,
+        fileEntries: [entry],
+        queueMode: MULTI_FILE_QUEUE_MODES.SPLIT,
+      }));
+    }
+
+    return [createQueueJob({
+      draft,
+      fileEntries,
+      queueMode: MULTI_FILE_QUEUE_MODES.BATCH,
+    })];
   }
 
   function renderUploadQueue() {
@@ -401,7 +484,7 @@ export function initIndexPage() {
             <div class="queueTitle">${escapeHtml(job.projectLabel)} / ${escapeHtml(job.shortLabel)} / ${job.fileCount} file(s)</div>
             <span class="${badgeClass}">${escapeHtml(getQueueStatusLabel(job.status))}</span>
           </div>
-          <div class="queueMeta">${escapeHtml(toTokyo(job.createdAt))} | ${escapeHtml(job.recordingDate)} | ${escapeHtml(job.selectedVideoType)} | ${escapeHtml(formatBytes(job.totalBytes))}</div>
+          <div class="queueMeta">${escapeHtml(toTokyo(job.createdAt))} | ${escapeHtml(job.recordingDate)} | ${escapeHtml(job.selectedVideoType)} | ${escapeHtml(formatBytes(job.totalBytes))} | ${escapeHtml(job.queueModeLabel)}</div>
           <div class="queueMeta">${escapeHtml(filePreview)}</div>
           <div class="queueDetail">${escapeHtml(detailText)}</div>
           <div class="queueProgress"><div class="queueProgressBar" style="width:${progressValue}%;"></div></div>
@@ -414,6 +497,8 @@ export function initIndexPage() {
   function setUploadEnabledState() {
     const draft = buildUploadDraft({ interactive: false });
     els.fileInput.disabled = !accessToken;
+    if (els.multiQueueModeBatch) els.multiQueueModeBatch.disabled = !accessToken;
+    if (els.multiQueueModeSplit) els.multiQueueModeSplit.disabled = !accessToken;
     els.btnUpload.disabled = !draft.ok;
     els.btnLogout.disabled = !accessToken || hasQueueWork();
   }
@@ -564,18 +649,18 @@ export function initIndexPage() {
       return null;
     }
 
-    const job = createQueueJobFromDraft(uploadDraft);
-    uploadQueue.push(job);
+    const jobs = createQueueJobsFromDraft(uploadDraft);
+    uploadQueue.push(...jobs);
     clearDraftSelectionUI();
     renderUploadQueue();
     setUploadEnabledState();
 
     const queueMessage = uploadInProgress || queueRunnerActive
-      ? `Queued ${job.fileCount} file(s) for ${job.projectId}.`
-      : `Queued ${job.fileCount} file(s). Upload starting...`;
+      ? `Queued ${jobs.length} item(s) from ${uploadDraft.fileList.length} file(s) for ${uploadDraft.project.projectId}.`
+      : `Queued ${jobs.length} item(s) from ${uploadDraft.fileList.length} file(s). Upload starting...`;
     setAutoQueueHint(queueMessage);
     void processUploadQueue();
-    return job;
+    return jobs;
   }
 
   function attemptAutoQueue() {
@@ -1287,6 +1372,18 @@ export function initIndexPage() {
       setUploadEnabledState();
       attemptAutoQueue();
     };
+    if (els.multiQueueModeBatch) {
+      els.multiQueueModeBatch.onchange = () => {
+        setUploadEnabledState();
+        attemptAutoQueue();
+      };
+    }
+    if (els.multiQueueModeSplit) {
+      els.multiQueueModeSplit.onchange = () => {
+        setUploadEnabledState();
+        attemptAutoQueue();
+      };
+    }
     els.perFileList.addEventListener("input", () => {
       setUploadEnabledState();
       attemptAutoQueue();
@@ -1341,7 +1438,7 @@ export function initIndexPage() {
     });
 
     els.btnLogout.onclick = () => {
-      setRememberEnabled(false);
+      clearRememberSigninCookies();
       if (els.rememberSignin) els.rememberSignin.checked = false;
       setLoggedOut();
       showLoginScreen();
@@ -1391,9 +1488,7 @@ export function initIndexPage() {
       error_callback: (error) => {
         console.error("Google OAuth error:", error);
         if (silentAuthInProgress) {
-          silentAuthInProgress = false;
-          showLoginScreen();
-          els.me.textContent = "Signed out";
+          handleSilentSigninFailure();
           return;
         }
 
@@ -1412,9 +1507,11 @@ export function initIndexPage() {
       callback: async (response) => {
         silentAuthInProgress = false;
         accessToken = response.access_token;
+        renderLastSigninHint();
 
         try {
           myEmail = await fetchMyEmail(accessToken);
+          setCachedSigninEmail(myEmail);
           hideLoginScreen();
           els.loginError.textContent = "";
           els.btnLogin.disabled = false;
@@ -1433,6 +1530,8 @@ export function initIndexPage() {
           els.desc.disabled = false;
           els.videoTypeInput.disabled = false;
           els.fileInput.disabled = false;
+          if (els.multiQueueModeBatch) els.multiQueueModeBatch.disabled = false;
+          if (els.multiQueueModeSplit) els.multiQueueModeSplit.disabled = false;
           els.recordingDateInput.disabled = false;
           els.fileLabelInput.disabled = false;
 
@@ -1472,9 +1571,7 @@ export function initIndexPage() {
     try {
       tokenClient.requestAccessToken({ prompt: "" });
     } catch {
-      silentAuthInProgress = false;
-      showLoginScreen();
-      els.me.textContent = "Signed out";
+      handleSilentSigninFailure();
     }
   } else {
     showLoginScreen();

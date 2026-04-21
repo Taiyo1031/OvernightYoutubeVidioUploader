@@ -673,6 +673,13 @@ td.desc{ min-width: 400px; }
 }
 .loginRemember input{ cursor: pointer; accent-color: var(--primary); }
 
+.loginHint{
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,.12);
+  padding: 10px 12px;
+  text-align: center;
+}
+
 .loginBtn{
   width: 100%;
   padding: 13px;
@@ -688,6 +695,10 @@ td.desc{ min-width: 400px; }
   text-align: center;
   min-height: 16px;
   letter-spacing: .02em;
+}
+
+.authHint{
+  margin: 10px 0 0;
 }
 
 /* ─── Drop zone ──────────────────────────────────── */

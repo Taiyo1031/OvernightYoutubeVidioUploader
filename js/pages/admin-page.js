@@ -1,5 +1,15 @@
 import { CONFIG } from "../../app.js";
-import { fetchMyEmail, getRememberEnabled, isAdminEmail, loadAllowedEmails, saveAllowedEmails, setRememberEnabled } from "../shared/auth.js";
+import {
+  clearRememberSigninCookies,
+  fetchMyEmail,
+  getCachedSigninEmail,
+  getRememberEnabled,
+  isAdminEmail,
+  loadAllowedEmails,
+  saveAllowedEmails,
+  setCachedSigninEmail,
+  setRememberEnabled,
+} from "../shared/auth.js";
 import { LOG_COLUMNS, PROJECTS_COLUMNS } from "../shared/constants.js";
 import { normalizeProjectId } from "../shared/file-name.js";
 import { escapeHtml, formatBytes, nowISO, pad3, toTokyo } from "../shared/format.js";
@@ -18,6 +28,7 @@ export function initAdminPage() {
     btnLogout: document.getElementById("btnLogout"),
     blockedCard: document.getElementById("blockedCard"),
     blockedMsg: document.getElementById("blockedMsg"),
+    lastSigninHint: document.getElementById("lastSigninHint"),
     adminCard: document.getElementById("adminCard"),
     accessCard: document.getElementById("accessCard"),
     projectsCard: document.getElementById("projectsCard"),
@@ -76,6 +87,37 @@ export function initAdminPage() {
     els.accessCard.style.display = "block";
     els.projectsCard.style.display = "block";
     els.filesCard.style.display = "block";
+  }
+
+  function renderLastSigninHint() {
+    if (!els.lastSigninHint) return;
+
+    const cachedEmail = !accessToken ? getCachedSigninEmail() : "";
+    if (!cachedEmail) {
+      els.lastSigninHint.hidden = true;
+      els.lastSigninHint.textContent = "";
+      return;
+    }
+
+    els.lastSigninHint.hidden = false;
+    els.lastSigninHint.textContent = `Last signed in as: ${cachedEmail}`;
+  }
+
+  function setSignedOutUi(message = "Please sign in.") {
+    accessToken = null;
+    myEmail = "";
+    els.me.textContent = "Signed out";
+    els.btnLogout.disabled = true;
+    els.btnLogin.style.display = "";
+    showBlocked(message);
+    renderLastSigninHint();
+  }
+
+  function setSigningInUi() {
+    els.me.textContent = "Signing in...";
+    els.btnLogin.style.display = "none";
+    showBlocked("Signing in...");
+    if (els.lastSigninHint) els.lastSigninHint.hidden = true;
   }
 
   function normEmail(value) {
@@ -430,7 +472,7 @@ export function initAdminPage() {
     };
 
     els.btnLogout.onclick = () => {
-      setRememberEnabled(false);
+      clearRememberSigninCookies();
       if (els.rememberSignin) els.rememberSignin.checked = false;
       location.reload();
     };
@@ -532,9 +574,7 @@ export function initAdminPage() {
         console.error("Google OAuth error:", error);
         if (silentAuthInProgress) {
           silentAuthInProgress = false;
-          els.btnLogin.style.display = "";
-          showBlocked("Please sign in.");
-          els.me.textContent = "Signed out";
+          setSignedOutUi("Please sign in.");
           return;
         }
         if (error?.type === "popup_failed_to_open") {
@@ -550,11 +590,14 @@ export function initAdminPage() {
       callback: async (response) => {
         silentAuthInProgress = false;
         accessToken = response.access_token;
+        renderLastSigninHint();
 
         try {
           myEmail = await fetchMyEmail(accessToken);
+          setCachedSigninEmail(myEmail);
           els.me.textContent = `Signed in: ${myEmail}`;
           els.btnLogout.disabled = false;
+          renderLastSigninHint();
 
           if (!isAdminEmail(myEmail, CONFIG.ADMIN_EMAIL)) {
             showBlocked(`Access denied. Admin only: ${CONFIG.ADMIN_EMAIL}`);
@@ -579,21 +622,19 @@ export function initAdminPage() {
 
   const tokenClient = createTokenClient();
   bindEvents(tokenClient);
+  renderLastSigninHint();
 
   if (getRememberEnabled()) {
-    els.me.textContent = "Signing in...";
-    els.btnLogin.style.display = "none";
-    showBlocked("Signing in...");
+    setSigningInUi();
     silentAuthInProgress = true;
     try {
       tokenClient.requestAccessToken({ prompt: "" });
     } catch {
       silentAuthInProgress = false;
-      els.btnLogin.style.display = "";
-      showBlocked("Please sign in.");
+      setSignedOutUi("Please sign in.");
     }
   } else {
-    showBlocked("Please sign in.");
+    setSignedOutUi("Please sign in.");
   }
 }
 

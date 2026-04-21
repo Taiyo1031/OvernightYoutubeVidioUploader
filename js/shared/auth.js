@@ -1,17 +1,88 @@
-import { STORAGE_KEYS } from "./constants.js";
+import { COOKIE_KEYS, LEGACY_STORAGE_KEYS, STORAGE_KEYS } from "./constants.js";
+
+const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
+let rememberPreferenceMigrated = false;
+
+function readCookie(name) {
+  try {
+    const cookiePairs = document.cookie ? document.cookie.split("; ") : [];
+    for (const pair of cookiePairs) {
+      const separatorIndex = pair.indexOf("=");
+      if (separatorIndex < 0) continue;
+
+      const key = pair.slice(0, separatorIndex);
+      if (key !== name) continue;
+
+      return decodeURIComponent(pair.slice(separatorIndex + 1));
+    }
+  } catch {}
+  return "";
+}
+
+function writeCookie(name, value, maxAgeSeconds = COOKIE_MAX_AGE_SECONDS) {
+  try {
+    document.cookie = [
+      `${name}=${encodeURIComponent(value)}`,
+      `Max-Age=${maxAgeSeconds}`,
+      "Path=/",
+      "SameSite=Lax",
+      "Secure",
+    ].join("; ");
+  } catch {}
+}
+
+function deleteCookie(name) {
+  try {
+    document.cookie = [
+      `${name}=`,
+      "Max-Age=0",
+      "Path=/",
+      "SameSite=Lax",
+      "Secure",
+    ].join("; ");
+  } catch {}
+}
+
+function migrateLegacyRememberPreference() {
+  if (rememberPreferenceMigrated) return;
+  rememberPreferenceMigrated = true;
+
+  try {
+    if (readCookie(COOKIE_KEYS.REMEMBER_SIGNIN)) return;
+
+    const legacyValue = localStorage.getItem(LEGACY_STORAGE_KEYS.REMEMBER_SIGNIN);
+    if (legacyValue === null) return;
+
+    writeCookie(COOKIE_KEYS.REMEMBER_SIGNIN, legacyValue === "0" ? "0" : "1");
+    localStorage.removeItem(LEGACY_STORAGE_KEYS.REMEMBER_SIGNIN);
+  } catch {}
+}
 
 export function getRememberEnabled() {
-  try {
-    return localStorage.getItem(STORAGE_KEYS.REMEMBER_SIGNIN) !== "0";
-  } catch {
-    return true;
-  }
+  migrateLegacyRememberPreference();
+  return readCookie(COOKIE_KEYS.REMEMBER_SIGNIN) === "1";
 }
 
 export function setRememberEnabled(value) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.REMEMBER_SIGNIN, value ? "1" : "0");
-  } catch {}
+  writeCookie(COOKIE_KEYS.REMEMBER_SIGNIN, value ? "1" : "0");
+}
+
+export function clearRememberSigninCookies() {
+  deleteCookie(COOKIE_KEYS.REMEMBER_SIGNIN);
+  deleteCookie(COOKIE_KEYS.LAST_EMAIL);
+}
+
+export function getCachedSigninEmail() {
+  return readCookie(COOKIE_KEYS.LAST_EMAIL);
+}
+
+export function setCachedSigninEmail(email) {
+  const normalized = (email || "").trim().toLowerCase();
+  if (!normalized) {
+    deleteCookie(COOKIE_KEYS.LAST_EMAIL);
+    return;
+  }
+  writeCookie(COOKIE_KEYS.LAST_EMAIL, normalized);
 }
 
 export async function fetchMyEmail(token) {

@@ -1,5 +1,13 @@
-export const STORAGE_KEYS = Object.freeze({
+export const COOKIE_KEYS = Object.freeze({
   REMEMBER_SIGNIN: "devlog_remember_signin",
+  LAST_EMAIL: "devlog_last_email",
+});
+
+export const LEGACY_STORAGE_KEYS = Object.freeze({
+  REMEMBER_SIGNIN: "devlog_remember_signin",
+});
+
+export const STORAGE_KEYS = Object.freeze({
   LAST_PROJECT: "devlog_last_project",
   ALLOWED_EMAILS: "devlog_allowed_emails",
 });
